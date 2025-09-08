@@ -56,6 +56,32 @@ extern const AP_HAL::HAL& hal;
 #define DIGIT_TO_VAL(_x)        (_x - '0')
 #define hexdigit(x) ((x)>9?'A'+((x)-10):'0'+(x))
 
+// NEU: Hilfsfunktion zum Senden von Allystar CFG-MSG Befehlen
+void AP_GPS_NMEA::_send_allystar_cfg_msg(uint8_t msg_class, uint8_t msg_id, uint8_t rate)
+{
+    uint8_t packet[11];
+    packet[0] = 0xF1; // Sync 1
+    packet[1] = 0xD9; // Sync 2
+    packet[2] = 0x06; // Class: CFG
+    packet[3] = 0x01; // ID: CFG-MSG
+    packet[4] = 3;    // Length LSB
+    packet[5] = 0;    // Length MSB
+    packet[6] = msg_class; // Payload: Message Class
+    packet[7] = msg_id;    // Payload: Message ID
+    packet[8] = rate;      // Payload: Period/Rate
+
+    // Fletcher-8 Checksum Berechnung
+    uint8_t ck_a = 0, ck_b = 0;
+    for (uint8_t i = 2; i < 9; i++) {
+        ck_a += packet[i];
+        ck_b += ck_a;
+    }
+    packet[9] = ck_a;
+    packet[10] = ck_b;
+
+    port->write(packet, sizeof(packet));
+}
+
 bool AP_GPS_NMEA::read(void)
 {
     int16_t numc;
@@ -922,12 +948,23 @@ void AP_GPS_NMEA::send_config(void)
     }
 
     case AP_GPS::GPS_TYPE_ALLYSTAR: {
-        // Poll-Anfrage für die binäre NAV-PVERR-Nachricht senden (ID 0x01 0x26)
-        // Format: Sync(2) + Class(1) + ID(1) + Length(2) + Payload(0) + Checksum(2)
-        // Checksum wird über Class, ID und Length berechnet.
-        // F1 D9 01 26 00 00 27 76
-        const uint8_t poll_req[] = {0xF1, 0xD9, 0x01, 0x26, 0x00, 0x00, 0x27, 0x76};
-        port->write(poll_req, sizeof(poll_req));
+        // Sende CFG-MSG Befehle, um die Raten für die benötigten Nachrichten zu setzen.
+        // Periode 1 -> Senden mit jeder Navigationslösung (entspricht params.rate_ms)
+        const uint8_t nmea_period = 1;
+        // Periode 4 -> Senden mit jeder 4. Navigationslösung (entspricht 4 * params.rate_ms)
+        const uint8_t pverr_period = 4;
+
+        // NMEA Nachrichten (Group ID 0xF0)
+        _send_allystar_cfg_msg(0xF0, 0x00, nmea_period); // GGA
+        _send_allystar_cfg_msg(0xF0, 0x05, nmea_period); // RMC
+        _send_allystar_cfg_msg(0xF0, 0x02, nmea_period); // GSA
+        _send_allystar_cfg_msg(0xF0, 0x04, nmea_period); // GSV
+        _send_allystar_cfg_msg(0xF0, 0x06, nmea_period); // VTG
+        // HINWEIS: GST hat keine konfigurierbare Sub-ID laut Dokumentation und wird daher nicht explizit konfiguriert.
+        
+        // Binäre NAV-PVERR Nachricht für Genauigkeitsdaten
+        // Class 0x01, ID 0x26 (wie im Code bereits verwendet, auch wenn nicht im PDF)
+        _send_allystar_cfg_msg(0x01, 0x26, pverr_period);
         break;
     }
 

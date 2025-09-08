@@ -268,6 +268,9 @@ private:
     // last time we sent type specific config strings
     uint32_t last_config_ms;
 
+    // NEU: Deklaration für Allystar-Konfigurationsfunktion hinzugefügt
+    void _send_allystar_cfg_msg(uint8_t msg_class, uint8_t msg_id, uint8_t rate);
+
     // send type specific config strings
     void send_config(void);
 };

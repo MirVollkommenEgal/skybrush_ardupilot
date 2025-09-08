@@ -1,0 +1,87 @@
+--- a/AP_GPS_NMEA.cpp
++++ b/AP_GPS_NMEA.cpp
+@@
+ #define hexdigit(x) ((x)>9?'A'+((x)-10):'0'+(x))
+ 
++// --- Allystar helpers --------------------------------------------------------
++static inline void allystar_cksum(const uint8_t *p, uint16_t len, uint8_t &cka, uint8_t &ckb)
++{
++    // 8-bit Fletcher über [MessageID..PayloadEnd], Startsequenz F1 D9 ist ausgeschlossen
++    // Referenz: "Packet field description / End Sequence" (CK1, CK2). 
++    // (siehe Allystar Protokoll) 
++    cka = 0; ckb = 0;
++    for (uint16_t i = 0; i < len; i++) { cka += p[i]; ckb += cka; }
++}
++
++// baut und sendet ein Allystar-CFG-MSG Paket: Klasse, ID, Period(U1)
++void AP_GPS_NMEA::allystar_send_cfg_msg(uint8_t cls, uint8_t id, uint8_t period)
++{
++    // Struktur: F1 D9  06 01  03 00  [cls id period]  CK_A CK_B
++    uint8_t buf[4 /*hdr*/ + 2 /*len*/ + 3 /*payload*/ + 2 /*ck*/];
++    uint8_t *w = buf;
++    *w++ = 0xF1; *w++ = 0xD9; // Start
++    *w++ = 0x06; *w++ = 0x01; // CFG-MSG
++    *w++ = 0x03; *w++ = 0x00; // Length = 3 (LE)
++    *w++ = cls;  *w++ = id;   // Payload
++    *w++ = period;
++    // Checksum über [MessageID..Payload]
++    uint8_t ck_a, ck_b;
++    allystar_cksum(&buf[2], 4 /*msg id*/ + 2 /*len*/ + 3 /*payload*/, ck_a, ck_b);
++    *w++ = ck_a; *w++ = ck_b;
++    port->write(buf, sizeof(buf));
++}
++
+ bool AP_GPS_NMEA::read(void)
+ {
+@@
+     return parsed;
+ }
+@@
+     case AP_GPS::GPS_TYPE_HEMI: {
+         port->printf(
+         "$JATT,NMEAHE,0\r\n" /* Prefix of GP on the HDT message */      \
+         "$JASC,GPGGA,%u\r\n" /* GGA at 5Hz */                            \
+         "$JASC,GPRMC,%u\r\n" /* RMC at 5Hz */                            \
+         "$JASC,GPVTG,%u\r\n" /* VTG at 5Hz */                            \
+         "$JASC,GPHDT,%u\r\n" /* HDT at 5Hz */                            \
+         "$JMODE,SBASR,YES\r\n" /* Enable SBAS */,
+         rate_hz, rate_hz, rate_hz, rate_hz);
+         break;
+     }
+ 
+     case AP_GPS::GPS_TYPE_ALLYSTAR: {
+-        // Poll-Anfrage für die binäre NAV-PVERR-Nachricht senden (ID 0x01 0x26)
+-        // Format: Sync(2) + Class(1) + ID(1) + Length(2) + Payload(0) + Checksum(2)
+-        // Checksum wird über Class, ID und Length berechnet.
+-        // F1 D9 01 26 00 00 27 76
+-        const uint8_t poll_req[] = {0xF1, 0xD9, 0x01, 0x26, 0x00, 0x00, 0x27, 0x76};
+-        port->write(poll_req, sizeof(poll_req));
+-        break;
++        /*
++         * AutoConfig für Allystar:
++         * - NMEA-Sätze (GGA,RMC,VTG,GSA,GSV,GST) auf "jede Lösung" (Period=1)
++         *   -> Effektiv ergibt sich die Ausgabefrequenz aus der Navigationsrate
++         * - NAV-PVERR (0x01/0x26) auf Period=4 (alle 4 Zyklen = 4*params.rate_ms)
++         * 
++         * CFG-MSG Layout: [Class, ID, Period].
++         * NMEA-Gruppe ist 0xF0 mit Sub-IDs je Satz (siehe Manual).
++         * Checksum: 8-bit Fletcher über MessageID..Payload.
++         */
++        const uint8_t per_nmea = 1;                  // pro Fix
++        const uint8_t per_pverr = 4;                 // alle 4 Fixes
++        // NMEA: GGA(0x00), RMC(0x05), VTG(0x06), GSA(0x02), GSV(0x04), GST(0x09/0x? ggf. 0x09 je nach FW)
++        allystar_send_cfg_msg(0xF0, 0x00, per_nmea); // GGA
++        allystar_send_cfg_msg(0xF0, 0x05, per_nmea); // RMC
++        allystar_send_cfg_msg(0xF0, 0x06, per_nmea); // VTG
++        allystar_send_cfg_msg(0xF0, 0x02, per_nmea); // GSA
++        allystar_send_cfg_msg(0xF0, 0x04, per_nmea); // GSV
++        // GST: im Allystar-Dokument gelistet; übliche SubID ist 0x09.
++        allystar_send_cfg_msg(0xF0, 0x09, per_nmea); // GST
++        // NAV-PVERR (Allystar-proprietär, in deiner Datei als 0x01/0x26 verwendet)
++        allystar_send_cfg_msg(0x01, 0x26, per_pverr);
++        break;
+     }
+ 
+     default:
+         break;
+     }
