@@ -82,6 +82,35 @@ void AP_GPS_NMEA::_send_allystar_cfg_msg(uint8_t msg_class, uint8_t msg_id, uint
     port->write(packet, sizeof(packet));
 }
 
+// Hilfsfunktion zum Speichern der Allystar-Konfiguration (CFG-CFG)
+void AP_GPS_NMEA::_send_allystar_cfg_cfg(uint32_t action, uint32_t mask)
+{
+    uint8_t packet[16];
+    packet[0] = 0xF1; // Sync 1
+    packet[1] = 0xD9; // Sync 2
+    packet[2] = 0x06; // Class: CFG
+    packet[3] = 0x09; // ID: CFG-CFG
+    packet[4] = 0x08; // Length LSB
+    packet[5] = 0x00; // Length MSB
+
+    // Payload: action (U4) + mask (U4), beide little-endian
+    for (uint8_t i = 0; i < 4; i++) {
+        packet[6 + i] = (action >> (8 * i)) & 0xFF;
+        packet[10 + i] = (mask >> (8 * i)) & 0xFF;
+    }
+
+    // 8-bit Fletcher Checksum berechnen (über Class..Payload)
+    uint8_t ck_a = 0, ck_b = 0;
+    for (uint8_t i = 2; i < 14; i++) {
+        ck_a += packet[i];
+        ck_b += ck_a;
+    }
+    packet[14] = ck_a;
+    packet[15] = ck_b;
+
+    port->write(packet, sizeof(packet));
+}
+
 bool AP_GPS_NMEA::read(void)
 {
     int16_t numc;
@@ -965,6 +994,29 @@ void AP_GPS_NMEA::send_config(void)
         // Binäre NAV-PVERR Nachricht für Genauigkeitsdaten
         // Class 0x01, ID 0x26 (wie im Code bereits verwendet, auch wenn nicht im PDF)
         _send_allystar_cfg_msg(0x01, 0x26, pverr_period);
+
+        if (!_allystar_config_sent_once) {
+            _allystar_config_sent_once = true;
+            _allystar_cfg_saved = (gps._save_config != 1);
+        }
+
+        if (_allystar_last_save_cfg != gps._save_config) {
+            _allystar_last_save_cfg = gps._save_config;
+            _allystar_cfg_saved = (gps._save_config != 1);
+        }
+
+        if (gps._save_config == 1 &&
+            _allystar_config_sent_once &&
+            !_allystar_cfg_saved &&
+            !hal.util->get_soft_armed() &&
+            (now_ms - _allystar_last_save_attempt_ms) > 1000U) {
+            static constexpr uint32_t allystar_cfg_action_save = 0U;
+            static constexpr uint32_t allystar_cfg_mask =
+                0x00000007U; // baudrate + message rate + navigation settings
+            _send_allystar_cfg_cfg(allystar_cfg_action_save, allystar_cfg_mask);
+            _allystar_cfg_saved = true;
+            _allystar_last_save_attempt_ms = now_ms;
+        }
         break;
     }
 
