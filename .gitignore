@@ -178,3 +178,9 @@ autotest_result_*_junit.xml
 
 # Ignore compiled firmware folder
 dist/
+Netlist_Schematic3_2025-11-06.asc
+Netlist_Schematic3_2025-11-06.net
+Tools/bootloaders/DPH_FC_01_bl.bin
+Tools/bootloaders/DPH_FC_01_bl.hex
+Tools/bootloaders/MatekH743-bdshot_bl.bin
+Tools/bootloaders/MatekH743-bdshot_bl.hex
