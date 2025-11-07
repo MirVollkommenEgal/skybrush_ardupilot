@@ -1,3 +1,5 @@
-# SERIAL7 is RCIN by default
-SERIAL7_PROTOCOL 23
-SERIAL7_BAUD 115
+# Enable bi-directional DShot on the four motor outputs
+SERVO_BLH_BDMASK 15
+SERVO_DSHOT_ESC 4
+SERVO_BLH_AUTO 1
+MOT_PWM_TYPE 6
