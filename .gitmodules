@@ -45,3 +45,6 @@
 [submodule "modules/libskybrush"]
 	path = modules/libskybrush
 	url = https://github.com/skybrush-io/libskybrush
+[submodule "FTS"]
+	path = FTS
+	url = https://github.com/MirVollkommenEgal/FTS_Firefly.git
