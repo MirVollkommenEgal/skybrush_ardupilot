@@ -1247,6 +1247,19 @@ const AP_Param::GroupInfo ParametersG2::var_info2[] = {
     // @User: Advanced
     AP_GROUPINFO("FS_EKF_FILT", 8, ParametersG2, fs_ekf_filt_hz, FS_EKF_FILT_DEFAULT),
 
+    // @Param: FTS_AUTOCONFIG
+    // @DisplayName: FTS autoconfiguration enable
+    // @Description: Enables sending a start packet containing SYSID_THISMAV on the selected port to pair with the FTS.
+    // @Values: 0:Disabled,1:Enabled
+    // @User: Advanced
+    AP_GROUPINFO("FTS_AUTOCONFIG", 9, ParametersG2, fts_autoconfig, 1),
+
+    // @Param: FTS_PORT
+    // @DisplayName: FTS autoconfiguration serial port
+    // @Description: Serial port number (SERIALx) used to send the FTS start packet.
+    // @User: Advanced
+    AP_GROUPINFO("FTS_PORT", 10, ParametersG2, fts_port, 1),
+
     // ID 62 is reserved for the AP_SUBGROUPEXTENSION
 
     AP_GROUPEND

@@ -80,6 +80,10 @@
 #include "version.h"
 #undef FORCE_VERSION_H_INCLUDE
 
+static constexpr uint32_t FTS_AUTOCONFIG_DURATION_MS = 20000U;
+static constexpr uint32_t FTS_AUTOCONFIG_SEND_PERIOD_MS = 1000U;
+static constexpr uint8_t FTS_AUTOCONFIG_MAX_SENDS = FTS_AUTOCONFIG_DURATION_MS / FTS_AUTOCONFIG_SEND_PERIOD_MS;
+
 const AP_HAL::HAL& hal = AP_HAL::get_HAL();
 
 #define SCHED_TASK(func, _interval_ticks, _max_time_micros, _prio) SCHED_TASK_CLASS(Copter, &copter, func, _interval_ticks, _max_time_micros, _prio)
@@ -755,12 +759,75 @@ void Copter::one_hz_loop()
 
     AP_Notify::flags.flying = !ap.land_complete;
 
+    fts_autoconfig_update();
+
     // slowly update the PID notches with the average loop rate
     attitude_control->set_notch_sample_rate(AP::scheduler().get_filtered_loop_rate_hz());
     pos_control->get_accel_z_pid().set_notch_sample_rate(AP::scheduler().get_filtered_loop_rate_hz());
 #if AC_CUSTOMCONTROL_MULTI_ENABLED
     custom_control.set_notch_sample_rate(AP::scheduler().get_filtered_loop_rate_hz());
 #endif
+}
+
+void Copter::fts_autoconfig_update()
+{
+    if (fts_autoconfig_done) {
+        return;
+    }
+
+    if (fts_autoconfig_send_count >= FTS_AUTOCONFIG_MAX_SENDS) {
+        fts_autoconfig_done = true;
+        return;
+    }
+
+    if (!g2.fts_autoconfig.get()) {
+        fts_autoconfig_done = true;
+        return;
+    }
+
+    const uint32_t now = AP_HAL::millis();
+
+    if (fts_autoconfig_start_ms == 0) {
+        fts_autoconfig_start_ms = now;
+    }
+
+    if ((int32_t)(now - fts_autoconfig_start_ms) >= (int32_t)FTS_AUTOCONFIG_DURATION_MS) {
+        fts_autoconfig_done = true;
+        return;
+    }
+
+    if ((fts_autoconfig_last_send_ms != 0) &&
+        ((now - fts_autoconfig_last_send_ms) < FTS_AUTOCONFIG_SEND_PERIOD_MS)) {
+        return;
+    }
+
+    const uint8_t port_num = g2.fts_port.get();
+    const uint8_t chan_idx = gcs().get_channel_from_port_number(port_num);
+    if (chan_idx == UINT8_MAX) {
+        return;
+    }
+
+    GCS_MAVLINK *link = gcs().chan(chan_idx);
+    if (link == nullptr) {
+        return;
+    }
+
+    const mavlink_channel_t mchan = link->get_chan();
+    if (!HAVE_PAYLOAD_SPACE(mchan, STATUSTEXT)) {
+        return;
+    }
+
+    char text[MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN] = {};
+    const uint8_t sysid = (uint8_t)g.sysid_this_mav.get();
+    (void)snprintf(text, sizeof(text), "FTS_START %u", (unsigned)sysid);
+
+    mavlink_msg_statustext_send(mchan, MAV_SEVERITY_INFO, text, 0, 0);
+
+    fts_autoconfig_last_send_ms = now;
+    fts_autoconfig_send_count++;
+    if (fts_autoconfig_send_count >= FTS_AUTOCONFIG_MAX_SENDS) {
+        fts_autoconfig_done = true;
+    }
 }
 
 void Copter::init_simple_bearing()

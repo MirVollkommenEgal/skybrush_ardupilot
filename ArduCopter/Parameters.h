@@ -533,6 +533,10 @@ public:
     // whether to enforce acceptance of packets only from sysid_my_gcs
     AP_Int8 sysid_enforce;
 
+    // FTS autoconfiguration
+    AP_Int8 fts_autoconfig;
+    AP_Int8 fts_port;
+
 #if AP_COPTER_ADVANCED_FAILSAFE_ENABLED
     // advanced failsafe library
     AP_AdvancedFailsafe_Copter afs;

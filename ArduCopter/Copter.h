@@ -357,6 +357,12 @@ private:
     // takeoff check
     uint32_t takeoff_check_warning_ms;  // system time user was last warned of takeoff check failure
 
+    // FTS autoconfiguration handshake state
+    uint32_t fts_autoconfig_start_ms{0};
+    uint32_t fts_autoconfig_last_send_ms{0};
+    uint8_t fts_autoconfig_send_count{0};
+    bool fts_autoconfig_done{false};
+
     // GCS selection
     GCS_Copter _gcs; // avoid using this; use gcs()
     GCS_Copter &gcs() { return _gcs; }
@@ -730,6 +736,7 @@ private:
     void twentyfive_hz_logging();
     void three_hz_loop();
     void one_hz_loop();
+    void fts_autoconfig_update();
     void init_simple_bearing();
     void update_simple_mode(void);
     void update_super_simple_bearing(bool force_update);
