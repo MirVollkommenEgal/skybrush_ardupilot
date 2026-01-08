@@ -75,6 +75,12 @@
  */
 
 #include "Copter.h"
+#include <AP_SerialManager/AP_SerialManager.h>
+#include <StorageManager/StorageManager.h>
+#if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
+#include <AP_HAL_ChibiOS/hwdef/common/stm32_util.h>
+#include <AP_HAL_ChibiOS/hwdef/common/watchdog.h>
+#endif
 
 #define FORCE_VERSION_H_INCLUDE
 #include "version.h"
@@ -83,6 +89,65 @@
 static constexpr uint32_t FTS_AUTOCONFIG_DURATION_MS = 20000U;
 static constexpr uint32_t FTS_AUTOCONFIG_SEND_PERIOD_MS = 1000U;
 static constexpr uint8_t FTS_AUTOCONFIG_MAX_SENDS = FTS_AUTOCONFIG_DURATION_MS / FTS_AUTOCONFIG_SEND_PERIOD_MS;
+
+#if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
+static constexpr uint8_t FTS_STATUS_RTC_BKP_IDX = 2U;
+#endif
+static constexpr uint16_t FTS_STATUS_STORAGE_MAGIC = 0x4654U;
+static constexpr uint16_t FTS_STATUS_STORAGE_OFFSET = 60U;
+
+static void send_fts_status_to_gcs(int16_t status)
+{
+    char name[MAVLINK_MSG_NAMED_VALUE_FLOAT_FIELD_NAME_LEN] = {};
+    strncpy(name, "ftsstat", sizeof(name));
+
+    const AP_HAL::UARTDriver *uart_serial3 = AP::serialmanager().get_serial_by_id(3);
+    const uint8_t gcs_count = gcs().num_gcs();
+    for (uint8_t i = 0; i < gcs_count; i++) {
+        GCS_MAVLINK *link = gcs().chan(i);
+        if ((link == nullptr) || !link->is_active()) {
+            continue;
+        }
+        if ((uart_serial3 != nullptr) && (link->get_uart() == uart_serial3)) {
+            continue;
+        }
+        mavlink_msg_named_value_float_send(link->get_chan(),
+                                           AP_HAL::millis(),
+                                           name,
+                                           (float)status);
+    }
+}
+
+static int16_t fts_status_load_from_storage()
+{
+    StorageAccess storage(StorageManager::StorageKeys);
+    if (storage.size() < (FTS_STATUS_STORAGE_OFFSET + 4U)) {
+        return -1;
+    }
+    if (storage.read_uint16(FTS_STATUS_STORAGE_OFFSET) != FTS_STATUS_STORAGE_MAGIC) {
+        return -1;
+    }
+    return (int16_t)storage.read_uint16(FTS_STATUS_STORAGE_OFFSET + 2U);
+}
+
+static void fts_status_save_to_storage(int16_t status)
+{
+    StorageAccess storage(StorageManager::StorageKeys);
+    if (storage.size() < (FTS_STATUS_STORAGE_OFFSET + 4U)) {
+        return;
+    }
+    storage.write_uint16(FTS_STATUS_STORAGE_OFFSET, FTS_STATUS_STORAGE_MAGIC);
+    storage.write_uint16(FTS_STATUS_STORAGE_OFFSET + 2U, (uint16_t)status);
+}
+
+static void fts_status_clear_storage()
+{
+    StorageAccess storage(StorageManager::StorageKeys);
+    if (storage.size() < (FTS_STATUS_STORAGE_OFFSET + 2U)) {
+        return;
+    }
+    storage.write_uint16(FTS_STATUS_STORAGE_OFFSET, 0U);
+}
 
 const AP_HAL::HAL& hal = AP_HAL::get_HAL();
 
@@ -760,6 +825,7 @@ void Copter::one_hz_loop()
     AP_Notify::flags.flying = !ap.land_complete;
 
     fts_autoconfig_update();
+    send_fts_status_to_gcs(fts_status);
 
     // slowly update the PID notches with the average loop rate
     attitude_control->set_notch_sample_rate(AP::scheduler().get_filtered_loop_rate_hz());
@@ -828,6 +894,49 @@ void Copter::fts_autoconfig_update()
     if (fts_autoconfig_send_count >= FTS_AUTOCONFIG_MAX_SENDS) {
         fts_autoconfig_done = true;
     }
+}
+
+void Copter::handle_fts_status(uint16_t sysid)
+{
+    fts_status = (int16_t)sysid;
+    fts_status_save_to_backup(fts_status);
+    fts_status_save_to_storage(fts_status);
+    send_fts_status_to_gcs(fts_status);
+}
+
+int16_t Copter::fts_status_load_from_backup()
+{
+#if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
+    if (!stm32_was_software_reset()) {
+        fts_status_clear_storage();
+        return -1;
+    }
+    const int16_t stored_status = fts_status_load_from_storage();
+    if (stored_status != -1) {
+        return stored_status;
+    }
+    uint32_t v = 0U;
+    get_rtc_backup(FTS_STATUS_RTC_BKP_IDX, &v, 1U);
+    if ((v == 0U) || (v > 256U)) {
+        return -1;
+    }
+    return (int16_t)(v - 1U);
+#else
+    return -1;
+#endif
+}
+
+void Copter::fts_status_save_to_backup(int16_t status)
+{
+#if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
+    uint32_t v = 0U;
+    if ((status >= 0) && (status <= 255)) {
+        v = (uint32_t)status + 1U;
+    }
+    set_rtc_backup(FTS_STATUS_RTC_BKP_IDX, &v, 1U);
+#else
+    (void)status;
+#endif
 }
 
 void Copter::init_simple_bearing()

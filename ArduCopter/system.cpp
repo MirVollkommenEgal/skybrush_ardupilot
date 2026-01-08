@@ -15,6 +15,8 @@ static void failsafe_check_static()
 
 void Copter::init_ardupilot()
 {
+    fts_status = fts_status_load_from_backup();
+
     // init winch
 #if AP_WINCH_ENABLED
     g2.winch.init();

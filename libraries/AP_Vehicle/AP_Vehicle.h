@@ -199,6 +199,9 @@ public:
     virtual bool get_target_location(Location& target_loc) { return false; }
     virtual bool update_target_location(const Location &old_loc, const Location &new_loc) { return false; }
 
+    // Optional hook for vehicle-specific status updates.
+    virtual void handle_fts_status(uint16_t sysid) {}
+
     // circle mode controls (only used by scripting with Copter)
     virtual bool get_circle_radius(float &radius_m) { return false; }
     virtual bool set_circle_rate(float rate_dps) { return false; }

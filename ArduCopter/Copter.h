@@ -939,8 +939,11 @@ private:
     void mode_change_failed(const Mode *mode, const char *reason);
     uint8_t get_mode() const override { return (uint8_t)flightmode->mode_number(); }
     bool current_mode_requires_mission() const override;
+    void handle_fts_status(uint16_t sysid) override;
     void update_flight_mode();
     void notify_flight_mode();
+    int16_t fts_status_load_from_backup();
+    void fts_status_save_to_backup(int16_t status);
 
     // Check if this mode can be entered from the GCS
     bool gcs_mode_enabled(const Mode::Number mode_num);
@@ -960,6 +963,9 @@ private:
     void auto_disarm_check();
     void motors_output();
     void lost_vehicle_check();
+
+    // FTS activation status (sysid), -1 means unknown.
+    int16_t fts_status = -1;
 
     // navigation.cpp
     void run_nav_updates(void);

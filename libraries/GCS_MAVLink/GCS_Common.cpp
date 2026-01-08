@@ -1795,6 +1795,40 @@ void GCS_MAVLINK::send_message(enum ap_message id)
     pushed_ap_message_ids.set(id);
 }
 
+static void maybe_handle_fts_status(const mavlink_message_t &msg)
+{
+    if (msg.msgid != MAVLINK_MSG_ID_STATUSTEXT) {
+        return;
+    }
+
+    mavlink_statustext_t packet;
+    mavlink_msg_statustext_decode(&msg, &packet);
+    char text[MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN + 1] = {};
+    memcpy(text, packet.text, MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN);
+
+    static const char fts_prefix[] = "FTS successfully activated, SYSID ";
+    if (strncmp(text, fts_prefix, sizeof(fts_prefix) - 1U) != 0) {
+        return;
+    }
+
+    const char *p = text + (sizeof(fts_prefix) - 1U);
+    uint16_t sysid = 0;
+    bool have_digit = false;
+    while ((*p >= '0') && (*p <= '9')) {
+        sysid = (uint16_t)(sysid * 10U + (uint16_t)(*p - '0'));
+        p++;
+        have_digit = true;
+    }
+    if (!have_digit) {
+        return;
+    }
+
+    AP_Vehicle *vehicle = AP::vehicle();
+    if (vehicle != nullptr) {
+        vehicle->handle_fts_status(sysid);
+    }
+}
+
 void GCS_MAVLINK::packetReceived(const mavlink_status_t &status,
                                  const mavlink_message_t &msg)
 {
@@ -1831,6 +1865,7 @@ void GCS_MAVLINK::packetReceived(const mavlink_status_t &status,
         }
     }
 #endif // AP_SCRIPTING_ENABLED
+    maybe_handle_fts_status(msg);
     if (!accept_packet(status, msg)) {
         // e.g. enforce-sysid says we shouldn't look at this packet
         return;
@@ -3687,32 +3722,37 @@ void GCS_MAVLINK::send_timesync()
 
 void GCS_MAVLINK::handle_statustext(const mavlink_message_t &msg) const
 {
-#if HAL_LOGGING_ENABLED
-    AP_Logger *logger = AP_Logger::get_singleton();
-    if (logger == nullptr) {
-        return;
-    }
-
     mavlink_statustext_t packet;
     mavlink_msg_statustext_decode(&msg, &packet);
-    const uint8_t max_prefix_len = 20;
-    const uint8_t text_len = MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN+1+max_prefix_len;
-    char text[text_len] = { 'G','C','S',':'};
-    uint8_t offset = strlen(text);
+    char text[MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN + 1] = {};
+    memcpy(text, packet.text, MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN);
+
+#if HAL_LOGGING_ENABLED
+    AP_Logger *logger = AP_Logger::get_singleton();
+    if (logger != nullptr) {
+        const uint8_t max_prefix_len = 20;
+        const uint8_t text_len = MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN+1+max_prefix_len;
+        char log_text[text_len] = { 'G','C','S',':'};
+        uint8_t offset = strlen(log_text);
+
+        if (msg.sysid != sysid_my_gcs()) {
+            offset = hal.util->snprintf(log_text,
+                                        max_prefix_len,
+                                        "SRC=%u/%u:",
+                                        msg.sysid,
+                                        msg.compid);
+            offset = MIN(offset, max_prefix_len);
+        }
+
+        memcpy(&log_text[offset], packet.text, MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN);
+        logger->Write_Message(log_text);
+    }
+#endif
 
     if (msg.sysid != sysid_my_gcs()) {
-        offset = hal.util->snprintf(text,
-                                    max_prefix_len,
-                                    "SRC=%u/%u:",
-                                    msg.sysid,
-                                    msg.compid);
-        offset = MIN(offset, max_prefix_len);
+        gcs().send_text((MAV_SEVERITY)packet.severity, "%s", text);
     }
 
-    memcpy(&text[offset], packet.text, MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN);
-
-    logger->Write_Message(text);
-#endif
 }
 
 
