@@ -49,11 +49,6 @@ private:
     AP_HAL::OwnPtr<AP_HAL::Device> dev;
 
     enum MMCState {
-        STATE_SET,
-        STATE_SET_MEASURE,
-        STATE_SET_WAIT,
-        STATE_RESET_MEASURE,
-        STATE_RESET_WAIT,
         STATE_MEASURE,
     } state;
     
@@ -67,17 +62,14 @@ private:
 
     uint8_t compass_instance;
     bool force_external;
-    Vector3f offset;
-    uint16_t measure_count;
-    bool have_initial_offset;
-    uint32_t refill_start_ms;
     uint32_t last_sample_ms;
-    
-    /* uint8_t data0[9]; */
-    Vector3f measurement0;
+    bool have_last_field;
+    Vector3f last_field;
+    uint8_t raw_hist_count;
+    Vector3f raw_hist[2];
+    uint8_t spike_rejects;
     
     enum Rotation rotation;
 };
 
 #endif  // AP_COMPASS_MMC5603_ENABLED
-
