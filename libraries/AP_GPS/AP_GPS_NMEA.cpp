@@ -82,6 +82,31 @@ void AP_GPS_NMEA::_send_allystar_cfg_msg(uint8_t msg_class, uint8_t msg_id, uint
     port->write(packet, sizeof(packet));
 }
 
+// Allystar CFG-PWRCTL2 for 5Hz navigation/output rate
+void AP_GPS_NMEA::_send_allystar_cfg_pwrctl2_5hz(void)
+{
+    uint8_t packet[] = {
+        0xF1, 0xD9, // sync
+        0x06, 0x44, // class/id: CFG-PWRCTL2
+        0x10, 0x00, // payload length: 16
+        // payload from DATAGNSS reference for 5Hz (200ms)
+        0x00, 0x00, 0x01, 0x00, 0x05, 0x00, 0x00, 0x00,
+        0xC8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00  // checksum
+    };
+
+    uint8_t ck_a = 0;
+    uint8_t ck_b = 0;
+    for (uint8_t i = 2; i < ARRAY_SIZE(packet) - 2; i++) {
+        ck_a += packet[i];
+        ck_b += ck_a;
+    }
+    packet[ARRAY_SIZE(packet) - 2] = ck_a;
+    packet[ARRAY_SIZE(packet) - 1] = ck_b;
+
+    port->write(packet, sizeof(packet));
+}
+
 // Hilfsfunktion zum Speichern der Allystar-Konfiguration (CFG-CFG)
 void AP_GPS_NMEA::_send_allystar_cfg_cfg(uint32_t action, uint32_t mask)
 {
@@ -977,11 +1002,14 @@ void AP_GPS_NMEA::send_config(void)
     }
 
     case AP_GPS::GPS_TYPE_ALLYSTAR: {
+        _send_allystar_cfg_pwrctl2_5hz();
+
         // Sende CFG-MSG Befehle, um die Raten für die benötigten Nachrichten zu setzen.
         // Periode 1 -> Senden mit jeder Navigationslösung (entspricht params.rate_ms)
         const uint8_t nmea_period = 1;
-        // Periode 4 -> Senden mit jeder 4. Navigationslösung (entspricht 4 * params.rate_ms)
-        const uint8_t pverr_period = 4;
+        // NAV-PVERR must be available for each fix so NMEA health/timing stays consistent.
+        // With 5Hz navigation, period 4 causes ~800ms update cadence and unhealthy GPS.
+        const uint8_t pverr_period = 1;
 
         // NMEA Nachrichten (Group ID 0xF0)
         _send_allystar_cfg_msg(0xF0, 0x00, nmea_period); // GGA

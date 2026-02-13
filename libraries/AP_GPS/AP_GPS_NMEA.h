@@ -270,6 +270,7 @@ private:
 
     // NEU: Deklaration für Allystar-Konfigurationsfunktionen hinzugefügt
     void _send_allystar_cfg_msg(uint8_t msg_class, uint8_t msg_id, uint8_t rate);
+    void _send_allystar_cfg_pwrctl2_5hz(void);
     void _send_allystar_cfg_cfg(uint32_t action, uint32_t mask);
 
     bool _allystar_config_sent_once = false;

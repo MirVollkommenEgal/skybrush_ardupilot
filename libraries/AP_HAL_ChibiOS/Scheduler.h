@@ -69,7 +69,17 @@
 #endif
 
 #ifndef RCIN_THD_WA_SIZE
+/*
+  RCIN processing can be significantly heavier on high-rate serial
+  protocols (for example ELRS/CRSF during boot). On H7 targets we can
+  afford a larger default stack to avoid stack corruption in early
+  startup bursts.
+ */
+#if defined(STM32H7)
+#define RCIN_THD_WA_SIZE    1536
+#else
 #define RCIN_THD_WA_SIZE    1024
+#endif
 #endif
 
 #ifndef IO_THD_WA_SIZE

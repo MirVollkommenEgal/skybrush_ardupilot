@@ -486,12 +486,24 @@ void stack_overflow(thread_t *tp)
  */
 uint32_t stack_free(void *stack_base)
 {
-    const uint32_t *p = (uint32_t *)stack_base;
-    const uint32_t canary_word = 0x55555555;
-    while (*p == canary_word) {
+    if (stack_base == NULL || !is_address_in_memory(stack_base)) {
+        return 0;
+    }
+
+    const uint8_t *base = (const uint8_t *)stack_base;
+    const uint8_t *end = (const uint8_t *)get_addr_mem_region_end_addr(stack_base);
+    const uint8_t canary_byte = CH_DBG_STACK_FILL_VALUE;
+    const uint8_t *p = base;
+
+    if (end == NULL || end <= base) {
+        return 0;
+    }
+
+    while (p < end && *p == canary_byte) {
         p++;
     }
-    return ((uint32_t)p) - (uint32_t)stack_base;
+
+    return (uint32_t)(p - base);
 }
 #endif
 
