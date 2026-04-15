@@ -150,6 +150,15 @@ const AP_Param::GroupInfo AC_DroneShowManager::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("CTRL_RATE", 14, AC_DroneShowManager, _params.control_rate_hz, DEFAULT_UPDATE_RATE_HZ),
 
+    // @Param: REFRESH
+    // @DisplayName: Show LED refresh rate
+    // @Description: Refresh rate of the main show LED output when LED0_TYPE is set to NeoPixel. Zero disables periodic refreshes and only sends updates when the color changes.
+    // @Range: 0 25
+    // @Increment: 1
+    // @Units: Hz
+    // @User: Advanced
+    AP_GROUPINFO("REFRESH", 38, AC_DroneShowManager, _params.led_refresh_hz, 1),
+
     // @Param: VEL_FF_GAIN
     // @DisplayName: Velocity feed-forward gain
     // @Description: Multiplier used when mixing the desired velocity of the drone into the velocity target of the position controller. Lower values will result in more relaxed/stable behaviour, at the price of a smoothed trajectory with rounded corners, less accuracy and more lag behind desired position. Higher values will decrease lag, make trajectory following more accurate, sharp and agressive, but might increase overshoot at corners and decrease stability if general attitude control is not tuned well.

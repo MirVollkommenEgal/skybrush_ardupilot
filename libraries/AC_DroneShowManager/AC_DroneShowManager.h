@@ -554,6 +554,9 @@ private:
 
         // Specifies how many times we send a new guided mode command during the show, per second.
         AP_Int8 control_rate_hz;
+
+        // Periodic refresh rate of the main show LED output in Hz.
+        AP_Int8 led_refresh_hz;
         
         // Index of the group that this drone belongs to. Currently we support at most 8 groups, indexed from 0 to 7.
         AP_Int8 group_index;

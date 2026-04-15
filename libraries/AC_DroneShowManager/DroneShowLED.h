@@ -45,10 +45,21 @@ private:
      */
     uint8_t _repeat_count_left;
 
+    /**
+     * Minimum interval between periodic refreshes of the last LED command.
+     * Zero disables periodic refreshes.
+     */
+    uint16_t _refresh_interval_msec;
+
+    /**
+     * Timestamp of the last successful LED command transmission.
+     */
+    uint32_t _last_command_sent_at_msec;
+
 public:
     DroneShowLED() :
         _gamma(0.0f), _min_brightness(0.0f), _last_red(0), _last_green(0), _last_blue(0), _last_white(0),
-        _repeat_count(0), _repeat_count_left(0)
+        _repeat_count(0), _repeat_count_left(0), _refresh_interval_msec(0), _last_command_sent_at_msec(0)
     {
         set_gamma(1.0f);
         set_repeat_count(1);
@@ -98,6 +109,23 @@ public:
     }
 
     /**
+     * Sets the periodic refresh rate of the LED in Hz. Zero disables
+     * periodic refreshes of unchanged colors.
+     */
+    void set_refresh_rate_hz(uint8_t value) {
+        uint16_t interval_msec = 0;
+
+        if (value > 0) {
+            interval_msec = MAX(static_cast<uint16_t>(1000U / value), static_cast<uint16_t>(1));
+        }
+
+        if (interval_msec != _refresh_interval_msec) {
+            _refresh_interval_msec = interval_msec;
+            _last_command_sent_at_msec = 0;
+        }
+    }
+
+    /**
      * Sets the color of the LED in RGB space. The value of the white channel
      * is assumed to be zero.
      * 
@@ -140,8 +168,15 @@ public:
      */
     void repeat_last_command_if_needed() {
         uint8_t red, green, blue, white;
+        uint32_t now = AP_HAL::millis();
+        bool should_send = _repeat_count_left > 0;
 
-        if (_repeat_count_left == 0) {
+        if (!should_send && _refresh_interval_msec > 0) {
+            should_send = _last_command_sent_at_msec == 0 ||
+                now - _last_command_sent_at_msec >= _refresh_interval_msec;
+        }
+
+        if (!should_send) {
             return;
         }
 
@@ -162,7 +197,10 @@ public:
         }
 
         if (set_raw_rgbw(red, green, blue, white)) {
-            _repeat_count_left--;
+            if (_repeat_count_left > 0) {
+                _repeat_count_left--;
+            }
+            _last_command_sent_at_msec = now;
         }
     }
 

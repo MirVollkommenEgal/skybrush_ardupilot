@@ -185,3 +185,12 @@ Tools/bootloaders/DPH_FC_01_bl.hex
 Tools/bootloaders/MatekH743-bdshot_bl.bin
 Tools/bootloaders/MatekH743-bdshot_bl.hex
 MMC5603NJDatasheetRev.B.pdf
+fc088.pdf
+fc088_page1_mcu.png
+fc088_page1.png
+fc088_page2.png
+fc088_page3.png
+fc088_imu1_schematic.png
+fc088_imu2_schematic.png
+BMI088.param
+H743.param

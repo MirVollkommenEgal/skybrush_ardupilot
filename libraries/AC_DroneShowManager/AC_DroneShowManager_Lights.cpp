@@ -629,6 +629,12 @@ void AC_DroneShowManager::_update_rgb_led_instance()
 
         // Update minimum brightness
         _rgb_led->set_min_brightness(_params.led_specs[0].min_brightness);
+
+        // Periodic refresh is currently used for NeoPixel outputs only.
+        _rgb_led->set_refresh_rate_hz(
+            previous_led_type == DroneShowLEDType_NeoPixel ||
+            previous_led_type == DroneShowLEDType_NeoPixel_RGBW ? _params.led_refresh_hz : 0
+        );
     }
 }
 
@@ -689,4 +695,3 @@ static float get_modulation_factor_for_light_effect(
             return 0.0;
     }
 }
-
