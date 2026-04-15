@@ -362,6 +362,8 @@ private:
     uint32_t fts_autoconfig_last_send_ms{0};
     uint8_t fts_autoconfig_send_count{0};
     bool fts_autoconfig_done{false};
+    uint32_t hmtrp_unlock_last_send_ms{0};
+    uint8_t hmtrp_unlock_send_count{0};
 
     // GCS selection
     GCS_Copter _gcs; // avoid using this; use gcs()
@@ -737,6 +739,7 @@ private:
     void three_hz_loop();
     void one_hz_loop();
     void fts_autoconfig_update();
+    void hmtrp_unlock_update();
     void init_simple_bearing();
     void update_simple_mode(void);
     void update_super_simple_bearing(bool force_update);
@@ -940,6 +943,9 @@ private:
     uint8_t get_mode() const override { return (uint8_t)flightmode->mode_number(); }
     bool current_mode_requires_mission() const override;
     void handle_fts_status(uint16_t sysid) override;
+    bool accept_fts_status_from_channel(uint8_t channel) override;
+    void handle_hmtrp_status(uint8_t status) override;
+    bool accept_hmtrp_status_from_channel(uint8_t channel) override;
     void update_flight_mode();
     void notify_flight_mode();
     int16_t fts_status_load_from_backup();
@@ -966,6 +972,7 @@ private:
 
     // FTS activation status (sysid), -1 means unknown.
     int16_t fts_status = -1;
+    int16_t hmtrp_status = -1;
 
     // navigation.cpp
     void run_nav_updates(void);

@@ -201,6 +201,9 @@ public:
 
     // Optional hook for vehicle-specific status updates.
     virtual void handle_fts_status(uint16_t sysid) {}
+    virtual bool accept_fts_status_from_channel(uint8_t channel) { return false; }
+    virtual void handle_hmtrp_status(uint8_t status) {}
+    virtual bool accept_hmtrp_status_from_channel(uint8_t channel) { return false; }
 
     // circle mode controls (only used by scripting with Copter)
     virtual bool get_circle_radius(float &radius_m) { return false; }

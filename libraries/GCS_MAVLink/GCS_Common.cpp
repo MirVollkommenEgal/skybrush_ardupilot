@@ -1795,20 +1795,25 @@ void GCS_MAVLINK::send_message(enum ap_message id)
     pushed_ap_message_ids.set(id);
 }
 
-static void maybe_handle_fts_status(const mavlink_message_t &msg)
+static bool maybe_accept_fts_status(uint16_t sysid, mavlink_channel_t channel)
 {
-    if (msg.msgid != MAVLINK_MSG_ID_STATUSTEXT) {
-        return;
+    AP_Vehicle *vehicle = AP::vehicle();
+    if ((vehicle != nullptr) && vehicle->accept_fts_status_from_channel((uint8_t)channel)) {
+        vehicle->handle_fts_status(sysid);
+        return true;
     }
+    return false;
+}
 
-    mavlink_statustext_t packet;
-    mavlink_msg_statustext_decode(&msg, &packet);
-    char text[MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN + 1] = {};
-    memcpy(text, packet.text, MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN);
+static bool maybe_parse_fts_status_text(const char *text, mavlink_channel_t channel)
+{
+    if (text == nullptr) {
+        return false;
+    }
 
     static const char fts_prefix[] = "FTS successfully activated, SYSID ";
     if (strncmp(text, fts_prefix, sizeof(fts_prefix) - 1U) != 0) {
-        return;
+        return false;
     }
 
     const char *p = text + (sizeof(fts_prefix) - 1U);
@@ -1820,13 +1825,111 @@ static void maybe_handle_fts_status(const mavlink_message_t &msg)
         have_digit = true;
     }
     if (!have_digit) {
-        return;
+        return false;
+    }
+
+    return maybe_accept_fts_status(sysid, channel);
+}
+
+static bool maybe_handle_fts_status(const mavlink_message_t &msg, mavlink_channel_t channel)
+{
+    if (msg.msgid != MAVLINK_MSG_ID_STATUSTEXT) {
+        return false;
+    }
+
+    if ((msg.sysid != 250U) || (msg.compid != 190U)) {
+        return false;
+    }
+
+    mavlink_statustext_t packet;
+    mavlink_msg_statustext_decode(&msg, &packet);
+    char text[MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN + 1] = {};
+    memcpy(text, packet.text, MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN);
+
+    return maybe_parse_fts_status_text(text, channel);
+}
+
+static bool maybe_handle_fts_status_byte(uint8_t c, mavlink_channel_t channel)
+{
+    static uint8_t prefix_pos[MAVLINK_COMM_NUM_BUFFERS];
+    static bool parsing_digits[MAVLINK_COMM_NUM_BUFFERS];
+    static bool have_digit[MAVLINK_COMM_NUM_BUFFERS];
+    static uint16_t sysid[MAVLINK_COMM_NUM_BUFFERS];
+    static const char fts_prefix[] = "FTS successfully activated, SYSID ";
+
+    const uint8_t idx = (uint8_t)(channel - MAVLINK_COMM_0);
+    if (idx >= MAVLINK_COMM_NUM_BUFFERS) {
+        return false;
     }
 
     AP_Vehicle *vehicle = AP::vehicle();
-    if (vehicle != nullptr) {
-        vehicle->handle_fts_status(sysid);
+    if ((vehicle == nullptr) || !vehicle->accept_fts_status_from_channel((uint8_t)channel)) {
+        prefix_pos[idx] = 0;
+        parsing_digits[idx] = false;
+        have_digit[idx] = false;
+        sysid[idx] = 0;
+        return false;
     }
+
+    if (parsing_digits[idx]) {
+        if ((c >= '0') && (c <= '9')) {
+            sysid[idx] = (uint16_t)(sysid[idx] * 10U + (uint16_t)(c - '0'));
+            have_digit[idx] = true;
+            return false;
+        }
+
+        parsing_digits[idx] = false;
+        const bool valid = have_digit[idx];
+        have_digit[idx] = false;
+        if (valid) {
+            const uint16_t parsed_sysid = sysid[idx];
+            sysid[idx] = 0;
+            return maybe_accept_fts_status(parsed_sysid, channel);
+        }
+        sysid[idx] = 0;
+    }
+
+    if (c == (uint8_t)fts_prefix[prefix_pos[idx]]) {
+        prefix_pos[idx]++;
+        if (prefix_pos[idx] == sizeof(fts_prefix) - 1U) {
+            prefix_pos[idx] = 0;
+            parsing_digits[idx] = true;
+            have_digit[idx] = false;
+            sysid[idx] = 0;
+        }
+    } else {
+        prefix_pos[idx] = (c == (uint8_t)fts_prefix[0]) ? 1U : 0U;
+    }
+    return false;
+}
+
+static bool maybe_handle_hmtrp_status_byte(uint8_t c, mavlink_channel_t channel)
+{
+    static uint8_t prefix_pos[MAVLINK_COMM_NUM_BUFFERS];
+    static const char hmtrp_live_text[] = "HMTRP_LIVE";
+
+    const uint8_t idx = (uint8_t)(channel - MAVLINK_COMM_0);
+    if (idx >= MAVLINK_COMM_NUM_BUFFERS) {
+        return false;
+    }
+
+    AP_Vehicle *vehicle = AP::vehicle();
+    if ((vehicle == nullptr) || !vehicle->accept_hmtrp_status_from_channel((uint8_t)channel)) {
+        prefix_pos[idx] = 0;
+        return false;
+    }
+
+    if (c == (uint8_t)hmtrp_live_text[prefix_pos[idx]]) {
+        prefix_pos[idx]++;
+        if (prefix_pos[idx] == sizeof(hmtrp_live_text) - 1U) {
+            prefix_pos[idx] = 0;
+            vehicle->handle_hmtrp_status(1);
+            return true;
+        }
+    } else {
+        prefix_pos[idx] = (c == (uint8_t)hmtrp_live_text[0]) ? 1U : 0U;
+    }
+    return false;
 }
 
 void GCS_MAVLINK::packetReceived(const mavlink_status_t &status,
@@ -1865,7 +1968,7 @@ void GCS_MAVLINK::packetReceived(const mavlink_status_t &status,
         }
     }
 #endif // AP_SCRIPTING_ENABLED
-    maybe_handle_fts_status(msg);
+    (void)maybe_handle_fts_status(msg, chan);
     if (!accept_packet(status, msg)) {
         // e.g. enforce-sysid says we shouldn't look at this packet
         return;
@@ -1894,6 +1997,8 @@ GCS_MAVLINK::update_receive(uint32_t max_time_us)
     {
         const uint8_t c = (uint8_t)_port->read();
         const uint32_t protocol_timeout = 4000;
+        const bool fts_status_from_raw_byte = maybe_handle_fts_status_byte(c, chan);
+        const bool hmtrp_status_from_raw_byte = maybe_handle_hmtrp_status_byte(c, chan);
         
         if (alternative.handler &&
             now_ms - alternative.last_mavlink_ms > protocol_timeout) {
@@ -1916,7 +2021,7 @@ GCS_MAVLINK::update_receive(uint32_t max_time_us)
             }
         }
 
-        bool parsed_packet = false;
+        bool parsed_packet = fts_status_from_raw_byte || hmtrp_status_from_raw_byte;
 
         // Try to get a new message
         const uint8_t framing = mavlink_frame_char_buffer(channel_buffer(), channel_status(), c, &msg, &status);
@@ -1928,6 +2033,13 @@ GCS_MAVLINK::update_receive(uint32_t max_time_us)
             alternative.last_mavlink_ms = now_ms;
             hal.util->persistent_data.last_mavlink_msgid = 0;
 
+        }
+        else if (framing == MAVLINK_FRAMING_BAD_SIGNATURE) {
+            if (maybe_handle_fts_status(msg, chan)) {
+                parsed_packet = true;
+                gcs_alternative_active[chan] = false;
+                alternative.last_mavlink_ms = now_ms;
+            }
         }
 #if AP_SCRIPTING_ENABLED
         else if (framing == MAVLINK_FRAMING_BAD_CRC) {

@@ -89,6 +89,9 @@
 static constexpr uint32_t FTS_AUTOCONFIG_DURATION_MS = 20000U;
 static constexpr uint32_t FTS_AUTOCONFIG_SEND_PERIOD_MS = 1000U;
 static constexpr uint8_t FTS_AUTOCONFIG_MAX_SENDS = FTS_AUTOCONFIG_DURATION_MS / FTS_AUTOCONFIG_SEND_PERIOD_MS;
+static constexpr const char HMTRP_FREE_TO_SEND_TEXT[] = "HMTRP_FREE_TO_SEND";
+static constexpr uint32_t HMTRP_UNLOCK_SEND_PERIOD_MS = 1000U;
+static constexpr uint8_t HMTRP_UNLOCK_MAX_SENDS = 20U;
 
 #if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
 static constexpr uint8_t FTS_STATUS_RTC_BKP_IDX = 2U;
@@ -100,6 +103,28 @@ static void send_fts_status_to_gcs(int16_t status)
 {
     char name[MAVLINK_MSG_NAMED_VALUE_FLOAT_FIELD_NAME_LEN] = {};
     strncpy(name, "ftsstat", sizeof(name));
+
+    const AP_HAL::UARTDriver *uart_serial3 = AP::serialmanager().get_serial_by_id(3);
+    const uint8_t gcs_count = gcs().num_gcs();
+    for (uint8_t i = 0; i < gcs_count; i++) {
+        GCS_MAVLINK *link = gcs().chan(i);
+        if ((link == nullptr) || !link->is_active()) {
+            continue;
+        }
+        if ((uart_serial3 != nullptr) && (link->get_uart() == uart_serial3)) {
+            continue;
+        }
+        mavlink_msg_named_value_float_send(link->get_chan(),
+                                           AP_HAL::millis(),
+                                           name,
+                                           (float)status);
+    }
+}
+
+static void send_hmtrp_status_to_gcs(int16_t status)
+{
+    char name[MAVLINK_MSG_NAMED_VALUE_FLOAT_FIELD_NAME_LEN] = {};
+    strncpy(name, "hmtrpstat", sizeof(name));
 
     const AP_HAL::UARTDriver *uart_serial3 = AP::serialmanager().get_serial_by_id(3);
     const uint8_t gcs_count = gcs().num_gcs();
@@ -147,6 +172,32 @@ static void fts_status_clear_storage()
         return;
     }
     storage.write_uint16(FTS_STATUS_STORAGE_OFFSET, 0U);
+}
+
+static void send_hmtrp_free_to_send(uint8_t port_num)
+{
+    AP_HAL::UARTDriver *uart = AP::serialmanager().get_serial_by_id(port_num);
+    if (uart != nullptr) {
+        uart->write(HMTRP_FREE_TO_SEND_TEXT);
+        uart->write("\n");
+    }
+
+    const uint8_t chan_idx = gcs().get_channel_from_port_number(port_num);
+    if (chan_idx == UINT8_MAX) {
+        return;
+    }
+
+    GCS_MAVLINK *link = gcs().chan(chan_idx);
+    if (link == nullptr) {
+        return;
+    }
+
+    const mavlink_channel_t mchan = link->get_chan();
+    if (HAVE_PAYLOAD_SPACE(mchan, STATUSTEXT)) {
+        char text[MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN] = {};
+        strncpy(text, HMTRP_FREE_TO_SEND_TEXT, sizeof(text));
+        mavlink_msg_statustext_send(mchan, MAV_SEVERITY_INFO, text, 0, 0);
+    }
 }
 
 const AP_HAL::HAL& hal = AP_HAL::get_HAL();
@@ -826,6 +877,8 @@ void Copter::one_hz_loop()
 
     fts_autoconfig_update();
     send_fts_status_to_gcs(fts_status);
+    hmtrp_unlock_update();
+    send_hmtrp_status_to_gcs(hmtrp_status);
 
     // slowly update the PID notches with the average loop rate
     attitude_control->set_notch_sample_rate(AP::scheduler().get_filtered_loop_rate_hz());
@@ -899,9 +952,66 @@ void Copter::fts_autoconfig_update()
 void Copter::handle_fts_status(uint16_t sysid)
 {
     fts_status = (int16_t)sysid;
+    fts_autoconfig_done = true;
     fts_status_save_to_backup(fts_status);
     fts_status_save_to_storage(fts_status);
     send_fts_status_to_gcs(fts_status);
+    hmtrp_status = 0;
+    hmtrp_unlock_last_send_ms = 0;
+    hmtrp_unlock_send_count = 0;
+    hmtrp_unlock_update();
+}
+
+bool Copter::accept_fts_status_from_channel(uint8_t channel)
+{
+    if (!g2.fts_autoconfig.get() || fts_autoconfig_done) {
+        return false;
+    }
+
+    const uint8_t fts_channel = gcs().get_channel_from_port_number((uint8_t)g2.fts_port.get());
+    return (fts_channel != UINT8_MAX) && (channel == fts_channel);
+}
+
+void Copter::hmtrp_unlock_update()
+{
+    if (hmtrp_status == 1) {
+        return;
+    }
+
+    if (fts_status < 0) {
+        return;
+    }
+
+    if (hmtrp_unlock_send_count >= HMTRP_UNLOCK_MAX_SENDS) {
+        hmtrp_status = 0;
+        return;
+    }
+
+    const uint32_t now = AP_HAL::millis();
+    if ((hmtrp_unlock_last_send_ms != 0) &&
+        ((now - hmtrp_unlock_last_send_ms) < HMTRP_UNLOCK_SEND_PERIOD_MS)) {
+        return;
+    }
+
+    send_hmtrp_free_to_send((uint8_t)g2.fts_port.get());
+    hmtrp_unlock_last_send_ms = now;
+    hmtrp_unlock_send_count++;
+}
+
+void Copter::handle_hmtrp_status(uint8_t status)
+{
+    hmtrp_status = (status != 0) ? 1 : 0;
+    send_hmtrp_status_to_gcs(hmtrp_status);
+}
+
+bool Copter::accept_hmtrp_status_from_channel(uint8_t channel)
+{
+    if (fts_status < 0) {
+        return false;
+    }
+
+    const uint8_t fts_channel = gcs().get_channel_from_port_number((uint8_t)g2.fts_port.get());
+    return (fts_channel != UINT8_MAX) && (channel == fts_channel);
 }
 
 int16_t Copter::fts_status_load_from_backup()
