@@ -17,6 +17,7 @@
 
 #include <AP_HAL/AP_HAL.h>
 #include <AP_FlashStorage/AP_FlashStorage.h>
+#include <AP_Logger/AP_Logger.h>
 #include <AP_Math/AP_Math.h>
 #include <AP_InternalError/AP_InternalError.h>
 #include <stdio.h>
@@ -28,6 +29,46 @@
 #else
 #define debug(fmt, args...)  do { } while(0)
 #endif
+
+namespace {
+
+enum class FlashDiagEvent : uint8_t {
+    SectorSwitchFailed = 1,
+    FullSwitchAttempt = 2,
+    FullSwitchRecursion = 3,
+    WriteAllFailed = 4,
+    EraseFailed = 5,
+    FinalSwitchFailed = 6,
+};
+
+void log_flash_diag(FlashDiagEvent event,
+                    uint8_t current_sector,
+                    uint32_t write_offset,
+                    uint32_t reserved_space,
+                    uint16_t offset,
+                    uint16_t length,
+                    uint32_t space_available,
+                    uint32_t space_required)
+{
+    if (AP_Logger::get_singleton() == nullptr) {
+        return;
+    }
+
+    AP::logger().WriteCritical("FSWI",
+                               "TimeUS,Evt,Cur,WOfs,RSv,SpcA,SpcR,Ofs,Len",
+                               "QBBIIIIHH",
+                               AP_HAL::micros64(),
+                               uint8_t(event),
+                               current_sector,
+                               write_offset,
+                               reserved_space,
+                               space_available,
+                               space_required,
+                               offset,
+                               length);
+}
+
+}
 
 // constructor.
 AP_FlashStorage::AP_FlashStorage(uint8_t *_mem_buffer,
@@ -142,6 +183,7 @@ bool AP_FlashStorage::switch_full_sector(void)
     debug("running switch_full_sector()\n");
 
     if (in_switch_full_sector) {
+        log_flash_diag(FlashDiagEvent::FullSwitchRecursion, current_sector, write_offset, reserved_space, 0, 0, 0, 0);
         INTERNAL_ERROR(AP_InternalError::error_t::switch_full_sector_recursion);
         return false;
     }
@@ -163,14 +205,20 @@ bool AP_FlashStorage::protected_switch_full_sector(void)
     reserved_space = 0;
     
     if (!write_all()) {
+        log_flash_diag(FlashDiagEvent::WriteAllFailed, current_sector, write_offset, reserved_space, 0, 0, 0, 0);
         return false;
     }
 
     if (!erase_sector(current_sector ^ 1, true)) {
+        log_flash_diag(FlashDiagEvent::EraseFailed, current_sector, write_offset, reserved_space, 0, 0, 0, 0);
         return false;
     }
 
-    return switch_sectors();
+    const bool ret = switch_sectors();
+    if (!ret) {
+        log_flash_diag(FlashDiagEvent::FinalSwitchFailed, current_sector, write_offset, reserved_space, 0, 0, 0, 0);
+    }
+    return ret;
 }
 
 // write some data to virtual EEPROM
@@ -193,9 +241,11 @@ bool AP_FlashStorage::write(uint16_t offset, uint16_t length)
         const uint32_t space_required = sizeof(struct block_header) + max_write + reserved_space;
         if (space_available < space_required) {
             if (!switch_sectors()) {
+                log_flash_diag(FlashDiagEvent::SectorSwitchFailed, current_sector, write_offset, reserved_space, offset, length, space_available, space_required);
                 if (!flash_erase_ok()) {
                     return false;
                 }
+                log_flash_diag(FlashDiagEvent::FullSwitchAttempt, current_sector, write_offset, reserved_space, offset, length, space_available, space_required);
                 if (!switch_full_sector()) {
                     return false;                    
                 }
