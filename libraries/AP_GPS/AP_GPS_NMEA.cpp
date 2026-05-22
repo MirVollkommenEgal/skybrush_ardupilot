@@ -34,6 +34,7 @@
 #include <AP_Logger/AP_Logger.h>
 
 #include <ctype.h>
+#include <cstring>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -56,7 +57,64 @@ extern const AP_HAL::HAL& hal;
 #define DIGIT_TO_VAL(_x)        (_x - '0')
 #define hexdigit(x) ((x)>9?'A'+((x)-10):'0'+(x))
 
-// NEU: Hilfsfunktion zum Senden von Allystar CFG-MSG Befehlen
+namespace {
+
+struct AllystarDesiredMsgRate {
+    uint8_t msg_class;
+    uint8_t msg_id;
+    uint8_t rate;
+    const char *name;
+};
+
+static constexpr AllystarDesiredMsgRate allystar_desired_msg_rates[] {
+    {0xF0, 0x00, 1, "GGA"},
+    {0xF0, 0x05, 1, "RMC"},
+    {0xF0, 0x02, 1, "GSA"},
+    {0xF0, 0x04, 1, "GSV"},
+    {0xF0, 0x06, 1, "VTG"},
+    {0x01, 0x26, 1, "NAV-PVERR"},
+};
+
+static constexpr AP_GPS_NMEA::AllystarPwrctl2 allystar_desired_pwrctl2 {
+    0, 0, 1, 5, 200, 0, true
+};
+
+static constexpr uint32_t ALLYSTAR_CONFIG_RETRY_MS = 500U;
+static constexpr uint32_t ALLYSTAR_CONFIG_TIMEOUT_MS = 1500U;
+static constexpr uint8_t ALLYSTAR_CONFIG_MAX_RETRIES = 3;
+static constexpr uint32_t ALLYSTAR_SAVE_MASK_BAUDRATE = 0x00000001U;
+static constexpr uint32_t ALLYSTAR_SAVE_MASK_MSG_RATES = 0x00000002U;
+static constexpr uint32_t ALLYSTAR_SAVE_MASK_NAV_SETTINGS = 0x00000004U;
+
+static_assert(ARRAY_SIZE(allystar_desired_msg_rates) == AP_GPS_NMEA::ALLYSTAR_NUM_CONFIG_MSGS,
+              "Allystar desired message configuration is out of sync");
+
+}
+
+static void allystar_checksum(const uint8_t *data, uint16_t len, uint8_t &ck_a, uint8_t &ck_b)
+{
+    ck_a = 0;
+    ck_b = 0;
+    for (uint16_t i = 0; i < len; i++) {
+        ck_a += data[i];
+        ck_b += ck_a;
+    }
+}
+
+void AP_GPS_NMEA::_send_allystar_poll_cfg_msg(uint8_t msg_class, uint8_t msg_id)
+{
+    uint8_t packet[10] {0xF1, 0xD9, 0x06, 0x01, 0x02, 0x00, msg_class, msg_id, 0x00, 0x00};
+    allystar_checksum(&packet[2], 6, packet[8], packet[9]);
+    port->write(packet, sizeof(packet));
+}
+
+void AP_GPS_NMEA::_send_allystar_poll_pwrctl2(void)
+{
+    uint8_t packet[8] {0xF1, 0xD9, 0x06, 0x44, 0x00, 0x00, 0x00, 0x00};
+    allystar_checksum(&packet[2], 4, packet[6], packet[7]);
+    port->write(packet, sizeof(packet));
+}
+
 void AP_GPS_NMEA::_send_allystar_cfg_msg(uint8_t msg_class, uint8_t msg_id, uint8_t rate)
 {
     uint8_t packet[11];
@@ -70,44 +128,33 @@ void AP_GPS_NMEA::_send_allystar_cfg_msg(uint8_t msg_class, uint8_t msg_id, uint
     packet[7] = msg_id;    // Payload: Message ID
     packet[8] = rate;      // Payload: Period/Rate
 
-    // Fletcher-8 Checksum Berechnung
-    uint8_t ck_a = 0, ck_b = 0;
-    for (uint8_t i = 2; i < 9; i++) {
-        ck_a += packet[i];
-        ck_b += ck_a;
-    }
-    packet[9] = ck_a;
-    packet[10] = ck_b;
+    allystar_checksum(&packet[2], 7, packet[9], packet[10]);
 
     port->write(packet, sizeof(packet));
 }
 
-// Allystar CFG-PWRCTL2 for 5Hz navigation/output rate
-void AP_GPS_NMEA::_send_allystar_cfg_pwrctl2_5hz(void)
+void AP_GPS_NMEA::_send_allystar_cfg_pwrctl2(const AllystarPwrctl2 &cfg)
 {
-    uint8_t packet[] = {
-        0xF1, 0xD9, // sync
-        0x06, 0x44, // class/id: CFG-PWRCTL2
-        0x10, 0x00, // payload length: 16
-        // payload from DATAGNSS reference for 5Hz (200ms)
-        0x00, 0x00, 0x01, 0x00, 0x05, 0x00, 0x00, 0x00,
-        0xC8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00  // checksum
+    uint8_t packet[24] {
+        0xF1, 0xD9,
+        0x06, 0x44,
+        0x10, 0x00,
+        cfg.mode, cfg.padding,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     };
 
-    uint8_t ck_a = 0;
-    uint8_t ck_b = 0;
-    for (uint8_t i = 2; i < ARRAY_SIZE(packet) - 2; i++) {
-        ck_a += packet[i];
-        ck_b += ck_a;
+    packet[8] = cfg.ontime_ms & 0xFF;
+    packet[9] = cfg.ontime_ms >> 8;
+    for (uint8_t i = 0; i < 4; i++) {
+        packet[10 + i] = (cfg.fixfreq >> (8U * i)) & 0xFF;
+        packet[14 + i] = (cfg.update_period_ms >> (8U * i)) & 0xFF;
+        packet[18 + i] = (cfg.tracking_ms >> (8U * i)) & 0xFF;
     }
-    packet[ARRAY_SIZE(packet) - 2] = ck_a;
-    packet[ARRAY_SIZE(packet) - 1] = ck_b;
+    allystar_checksum(&packet[2], 20, packet[22], packet[23]);
 
     port->write(packet, sizeof(packet));
 }
 
-// Hilfsfunktion zum Speichern der Allystar-Konfiguration (CFG-CFG)
 void AP_GPS_NMEA::_send_allystar_cfg_cfg(uint32_t action, uint32_t mask)
 {
     uint8_t packet[16];
@@ -124,14 +171,7 @@ void AP_GPS_NMEA::_send_allystar_cfg_cfg(uint32_t action, uint32_t mask)
         packet[10 + i] = (mask >> (8 * i)) & 0xFF;
     }
 
-    // 8-bit Fletcher Checksum berechnen (über Class..Payload)
-    uint8_t ck_a = 0, ck_b = 0;
-    for (uint8_t i = 2; i < 14; i++) {
-        ck_a += packet[i];
-        ck_b += ck_a;
-    }
-    packet[14] = ck_a;
-    packet[15] = ck_b;
+    allystar_checksum(&packet[2], 12, packet[14], packet[15]);
 
     port->write(packet, sizeof(packet));
 }
@@ -161,43 +201,73 @@ bool AP_GPS_NMEA::read(void)
  */
 bool AP_GPS_NMEA::_decode(char c)
 {
+    const uint8_t uc = (uint8_t)c;
+    const uint32_t now_ms = AP_HAL::millis();
+    if (_allystar_parse_state != AllystarParseState::IDLE &&
+        _allystar_last_byte_ms != 0 &&
+        now_ms - _allystar_last_byte_ms > 50) {
+        if (!_allystar_reported_binary_error && get_type() == AP_GPS::GPS_TYPE_ALLYSTAR) {
+            _allystar_reported_binary_error = true;
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING,
+                          "GPS %u: Allystar binary timeout cls=%u id=%u len=%u cnt=%u",
+                          state.instance + 1,
+                          (unsigned)_allystar_msg_class,
+                          (unsigned)_allystar_msg_id,
+                          (unsigned)_allystar_payload_length,
+                          (unsigned)_allystar_payload_counter);
+        }
+        _allystar_parse_state = AllystarParseState::IDLE;
+        _allystar_payload_length = 0;
+        _allystar_payload_counter = 0;
+    }
+    _allystar_last_byte_ms = now_ms;
     // Zustandmaschine für Allystar-Binärnachrichten
     switch (_allystar_parse_state) {
     case AllystarParseState::IDLE:
-        if ((uint8_t)c == 0xF1) {
+        if (uc == 0xF1) {
             _allystar_parse_state = AllystarParseState::GOT_SYNC1;
             // NMEA-Parsing für diesen Charakter überspringen
             return false;
         }
         break; // Zurück zum NMEA-Parsing
     case AllystarParseState::GOT_SYNC1:
-        if ((uint8_t)c == 0xD9) {
+        if (uc == 0xD9) {
             _allystar_parse_state = AllystarParseState::GOT_MSG_CLASS;
             _allystar_sum_a = 0;
             _allystar_sum_b = 0;
+            if (!_allystar_saw_binary_rx && get_type() == AP_GPS::GPS_TYPE_ALLYSTAR) {
+                _allystar_saw_binary_rx = true;
+            }
         } else {
             _allystar_parse_state = AllystarParseState::IDLE;
         }
         return false;
     case AllystarParseState::GOT_MSG_CLASS:
-        _allystar_msg_class = (uint8_t)c;
-        _allystar_sum_a += c; _allystar_sum_b += _allystar_sum_a;
+        _allystar_msg_class = uc;
+        _allystar_sum_a += uc; _allystar_sum_b += _allystar_sum_a;
         _allystar_parse_state = AllystarParseState::GOT_MSG_ID;
         return false;
     case AllystarParseState::GOT_MSG_ID:
-        _allystar_msg_id = (uint8_t)c;
-        _allystar_sum_a += c; _allystar_sum_b += _allystar_sum_a;
+        _allystar_msg_id = uc;
+        _allystar_sum_a += uc; _allystar_sum_b += _allystar_sum_a;
         _allystar_parse_state = AllystarParseState::GOT_LENGTH1;
         return false;
     case AllystarParseState::GOT_LENGTH1:
-        _allystar_payload_length = (uint8_t)c;
-        _allystar_sum_a += c; _allystar_sum_b += _allystar_sum_a;
+        _allystar_payload_length = uc;
+        _allystar_sum_a += uc; _allystar_sum_b += _allystar_sum_a;
         _allystar_parse_state = AllystarParseState::GOT_LENGTH2;
         return false;
     case AllystarParseState::GOT_LENGTH2:
-        _allystar_payload_length |= (uint16_t)((uint8_t)c) << 8;
-        _allystar_sum_a += c; _allystar_sum_b += _allystar_sum_a;
+        _allystar_payload_length |= (uint16_t)uc << 8;
+        _allystar_sum_a += uc; _allystar_sum_b += _allystar_sum_a;
         if (_allystar_payload_length > ALLYSTAR_BUFFER_SIZE) {
+            if (!_allystar_reported_binary_error && get_type() == AP_GPS::GPS_TYPE_ALLYSTAR) {
+                _allystar_reported_binary_error = true;
+                GCS_SEND_TEXT(MAV_SEVERITY_WARNING,
+                              "GPS %u: Allystar binary len %u too large",
+                              state.instance + 1,
+                              (unsigned)_allystar_payload_length);
+            }
             _allystar_parse_state = AllystarParseState::IDLE;
         } else if (_allystar_payload_length > 0) {
             _allystar_payload_counter = 0;
@@ -207,21 +277,29 @@ bool AP_GPS_NMEA::_decode(char c)
         }
         return false;
     case AllystarParseState::IN_PAYLOAD:
-        _allystar_buffer[_allystar_payload_counter++] = (uint8_t)c;
-        _allystar_sum_a += c; _allystar_sum_b += _allystar_sum_a;
+        _allystar_buffer[_allystar_payload_counter++] = uc;
+        _allystar_sum_a += uc; _allystar_sum_b += _allystar_sum_a;
         if (_allystar_payload_counter >= _allystar_payload_length) {
             _allystar_parse_state = AllystarParseState::IN_CHECKSUM1;
         }
         return false;
     case AllystarParseState::IN_CHECKSUM1:
-        _allystar_ck_a = (uint8_t)c;
+        _allystar_ck_a = uc;
         _allystar_parse_state = AllystarParseState::IN_CHECKSUM2;
         return false;
     case AllystarParseState::IN_CHECKSUM2:
-        _allystar_ck_b = (uint8_t)c;
+        _allystar_ck_b = uc;
         bool parsed = false;
         if (_allystar_sum_a == _allystar_ck_a && _allystar_sum_b == _allystar_ck_b) {
             parsed = _allystar_binary_packet_complete();
+        } else if (!_allystar_reported_binary_error && get_type() == AP_GPS::GPS_TYPE_ALLYSTAR) {
+            _allystar_reported_binary_error = true;
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING,
+                          "GPS %u: Allystar cksum err cls=%u id=%u len=%u",
+                          state.instance + 1,
+                          (unsigned)_allystar_msg_class,
+                          (unsigned)_allystar_msg_id,
+                          (unsigned)_allystar_payload_length);
         }
         _allystar_parse_state = AllystarParseState::IDLE;
         return parsed;
@@ -945,6 +1023,10 @@ void AP_GPS_NMEA::send_config(void)
     const auto type = get_type();
     _expect_agrica = (type == AP_GPS::GPS_TYPE_UNICORE_NMEA ||
                       type == AP_GPS::GPS_TYPE_UNICORE_MOVINGBASE_NMEA);
+    if (type == AP_GPS::GPS_TYPE_ALLYSTAR) {
+        _allystar_config_step(AP_HAL::millis());
+        return;
+    }
     if (gps._auto_config == AP_GPS::GPS_AUTO_CONFIG_DISABLE) {
         // not doing auto-config
         return;
@@ -1001,53 +1083,6 @@ void AP_GPS_NMEA::send_config(void)
         break;
     }
 
-    case AP_GPS::GPS_TYPE_ALLYSTAR: {
-        _send_allystar_cfg_pwrctl2_5hz();
-
-        // Sende CFG-MSG Befehle, um die Raten für die benötigten Nachrichten zu setzen.
-        // Periode 1 -> Senden mit jeder Navigationslösung (entspricht params.rate_ms)
-        const uint8_t nmea_period = 1;
-        // NAV-PVERR must be available for each fix so NMEA health/timing stays consistent.
-        // With 5Hz navigation, period 4 causes ~800ms update cadence and unhealthy GPS.
-        const uint8_t pverr_period = 1;
-
-        // NMEA Nachrichten (Group ID 0xF0)
-        _send_allystar_cfg_msg(0xF0, 0x00, nmea_period); // GGA
-        _send_allystar_cfg_msg(0xF0, 0x05, nmea_period); // RMC
-        _send_allystar_cfg_msg(0xF0, 0x02, nmea_period); // GSA
-        _send_allystar_cfg_msg(0xF0, 0x04, nmea_period); // GSV
-        _send_allystar_cfg_msg(0xF0, 0x06, nmea_period); // VTG
-        // HINWEIS: GST hat keine konfigurierbare Sub-ID laut Dokumentation und wird daher nicht explizit konfiguriert.
-        
-        // Binäre NAV-PVERR Nachricht für Genauigkeitsdaten
-        // Class 0x01, ID 0x26 (wie im Code bereits verwendet, auch wenn nicht im PDF)
-        _send_allystar_cfg_msg(0x01, 0x26, pverr_period);
-
-        if (!_allystar_config_sent_once) {
-            _allystar_config_sent_once = true;
-            _allystar_cfg_saved = (gps._save_config != 1);
-        }
-
-        if (_allystar_last_save_cfg != gps._save_config) {
-            _allystar_last_save_cfg = gps._save_config;
-            _allystar_cfg_saved = (gps._save_config != 1);
-        }
-
-        if (gps._save_config == 1 &&
-            _allystar_config_sent_once &&
-            !_allystar_cfg_saved &&
-            !hal.util->get_soft_armed() &&
-            (now_ms - _allystar_last_save_attempt_ms) > 1000U) {
-            static constexpr uint32_t allystar_cfg_action_save = 0U;
-            static constexpr uint32_t allystar_cfg_mask =
-                0x00000007U; // baudrate + message rate + navigation settings
-            _send_allystar_cfg_cfg(allystar_cfg_action_save, allystar_cfg_mask);
-            _allystar_cfg_saved = true;
-            _allystar_last_save_attempt_ms = now_ms;
-        }
-        break;
-    }
-
     default:
         break;
     }
@@ -1076,13 +1111,34 @@ bool AP_GPS_NMEA::is_healthy(void) const
         return _last_yaw_ms != 0;
 
     case AP_GPS::GPS_TYPE_ALLYSTAR:
-        // we should get velocity and accuracy from NAV-PVERR
-        return _last_vaccuracy_ms != 0;
+        if (_allystar_passive_mode) {
+            return _last_RMC_ms != 0 && _last_GGA_ms != 0;
+        }
+        return _last_vaccuracy_ms != 0 || (_last_RMC_ms != 0 && _last_GGA_ms != 0);
 
     default:
         break;
     }
     return true;
+}
+
+bool AP_GPS_NMEA::is_configured(void) const
+{
+    if (get_type() != AP_GPS::GPS_TYPE_ALLYSTAR ||
+        gps._auto_config == AP_GPS::GPS_AUTO_CONFIG_DISABLE) {
+        return true;
+    }
+    return _allystar_config_phase == AllystarConfigPhase::COMPLETE;
+}
+
+void AP_GPS_NMEA::broadcast_configuration_failure_reason(void) const
+{
+    if (get_type() != AP_GPS::GPS_TYPE_ALLYSTAR ||
+        gps._auto_config == AP_GPS::GPS_AUTO_CONFIG_DISABLE) {
+        return;
+    }
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "GPS %u: Allystar config %s",
+                  state.instance + 1, _allystar_pending_step_name());
 }
 
 // get the velocity lag
@@ -1119,9 +1175,300 @@ void AP_GPS_NMEA::Write_AP_Logger_Log_Startup_messages() const
 }
 #endif
 
-// Korrigierte Funktion, um das Alignment-Problem zu beheben und Syntaxfehler zu entfernen
+void AP_GPS_NMEA::_allystar_reset_config_state(void)
+{
+    memset(_allystar_msg_rates, 0, sizeof(_allystar_msg_rates));
+    memset(&_allystar_pwrctl2, 0, sizeof(_allystar_pwrctl2));
+    _allystar_config_phase = AllystarConfigPhase::POLL_MSG;
+    _allystar_config_index = 0;
+    _allystar_config_retries = 0;
+    _allystar_last_action_ms = 0;
+    _allystar_save_mask = 0;
+    _allystar_config_dirty = false;
+    _allystar_status_reported = false;
+    _allystar_passive_mode = false;
+    _allystar_saw_binary_rx = false;
+    _allystar_reported_binary_error = false;
+    _allystar_last_byte_ms = 0;
+    _allystar_failure_reason[0] = '\0';
+}
+
+bool AP_GPS_NMEA::_allystar_pwrctl2_matches_desired(void) const
+{
+    return _allystar_pwrctl2.valid &&
+           _allystar_pwrctl2.mode == allystar_desired_pwrctl2.mode &&
+           _allystar_pwrctl2.padding == allystar_desired_pwrctl2.padding &&
+           _allystar_pwrctl2.ontime_ms == allystar_desired_pwrctl2.ontime_ms &&
+           _allystar_pwrctl2.fixfreq == allystar_desired_pwrctl2.fixfreq &&
+           _allystar_pwrctl2.update_period_ms == allystar_desired_pwrctl2.update_period_ms &&
+           _allystar_pwrctl2.tracking_ms == allystar_desired_pwrctl2.tracking_ms;
+}
+
+bool AP_GPS_NMEA::_allystar_msg_matches_desired(uint8_t index) const
+{
+    return index < ALLYSTAR_NUM_CONFIG_MSGS &&
+           _allystar_msg_rates[index].valid &&
+           _allystar_msg_rates[index].msg_class == allystar_desired_msg_rates[index].msg_class &&
+           _allystar_msg_rates[index].msg_id == allystar_desired_msg_rates[index].msg_id &&
+           _allystar_msg_rates[index].rate == allystar_desired_msg_rates[index].rate;
+}
+
+bool AP_GPS_NMEA::_allystar_current_config_matches_desired(void) const
+{
+    for (uint8_t i = 0; i < ALLYSTAR_NUM_CONFIG_MSGS; i++) {
+        if (!_allystar_msg_matches_desired(i)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+uint8_t AP_GPS_NMEA::_allystar_next_dirty_msg(uint8_t start_index) const
+{
+    for (uint8_t i = start_index; i < ALLYSTAR_NUM_CONFIG_MSGS; i++) {
+        if (!_allystar_msg_matches_desired(i)) {
+            return i;
+        }
+    }
+    return ALLYSTAR_NUM_CONFIG_MSGS;
+}
+
+void AP_GPS_NMEA::_allystar_mark_configured(bool changed)
+{
+    _allystar_config_phase = AllystarConfigPhase::COMPLETE;
+    if (!changed) {
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "GPS %u: Allystar config already OK",
+                      state.instance + 1);
+    } else if (gps._save_config == 1 ||
+               (gps._save_config == 2 && _allystar_config_dirty)) {
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "GPS %u: Allystar config verified and saved",
+                      state.instance + 1);
+    } else {
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "GPS %u: Allystar config verified",
+                      state.instance + 1);
+    }
+}
+
+void AP_GPS_NMEA::_allystar_fail_config(const char *reason)
+{
+    _allystar_config_phase = AllystarConfigPhase::FAILED;
+    strncpy(_allystar_failure_reason, reason, sizeof(_allystar_failure_reason) - 1);
+    _allystar_failure_reason[sizeof(_allystar_failure_reason) - 1] = '\0';
+    GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "GPS %u: Allystar %s",
+                  state.instance + 1, _allystar_failure_reason);
+}
+
+void AP_GPS_NMEA::_allystar_fallback_to_passive(void)
+{
+    _allystar_passive_mode = true;
+    _allystar_config_phase = AllystarConfigPhase::COMPLETE;
+    strncpy(_allystar_failure_reason, "passive NMEA mode", sizeof(_allystar_failure_reason) - 1);
+    _allystar_failure_reason[sizeof(_allystar_failure_reason) - 1] = '\0';
+    GCS_SEND_TEXT(MAV_SEVERITY_WARNING,
+                  "GPS %u: Allystar no binary RX, passive NMEA",
+                  state.instance + 1);
+}
+
+const char *AP_GPS_NMEA::_allystar_pending_step_name(void) const
+{
+    if (_allystar_config_phase == AllystarConfigPhase::FAILED && _allystar_failure_reason[0] != '\0') {
+        return _allystar_failure_reason;
+    }
+    switch (_allystar_config_phase) {
+    case AllystarConfigPhase::POLL_MSG:
+    case AllystarConfigPhase::WAIT_POLL_MSG:
+    case AllystarConfigPhase::SET_MSG:
+    case AllystarConfigPhase::WAIT_ACK_MSG:
+    case AllystarConfigPhase::VERIFY_MSG:
+    case AllystarConfigPhase::WAIT_VERIFY_MSG:
+        return allystar_desired_msg_rates[_allystar_config_index].name;
+    case AllystarConfigPhase::SAVE_CFG:
+    case AllystarConfigPhase::WAIT_ACK_SAVE:
+        return "saving config";
+    case AllystarConfigPhase::COMPLETE:
+        return "complete";
+    case AllystarConfigPhase::FAILED:
+        return "failed";
+    case AllystarConfigPhase::IDLE:
+    default:
+        return "idle";
+    }
+}
+
+void AP_GPS_NMEA::_allystar_config_step(uint32_t now_ms)
+{
+    if (gps._auto_config == AP_GPS::GPS_AUTO_CONFIG_DISABLE) {
+        _allystar_config_phase = AllystarConfigPhase::COMPLETE;
+        return;
+    }
+    if (_allystar_config_phase == AllystarConfigPhase::IDLE) {
+        _allystar_reset_config_state();
+    }
+    if (!_allystar_status_reported) {
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "GPS %u: Allystar checking config",
+                      state.instance + 1);
+        _allystar_status_reported = true;
+    }
+
+    const bool waiting =
+        _allystar_config_phase == AllystarConfigPhase::WAIT_POLL_MSG ||
+        _allystar_config_phase == AllystarConfigPhase::WAIT_ACK_MSG ||
+        _allystar_config_phase == AllystarConfigPhase::WAIT_ACK_SAVE ||
+        _allystar_config_phase == AllystarConfigPhase::WAIT_VERIFY_MSG;
+
+    if (waiting && (now_ms - _allystar_last_action_ms > ALLYSTAR_CONFIG_TIMEOUT_MS)) {
+        if (++_allystar_config_retries > ALLYSTAR_CONFIG_MAX_RETRIES) {
+            if (_last_RMC_ms != 0 && _last_GGA_ms != 0) {
+                _allystar_fallback_to_passive();
+            } else {
+                _allystar_fail_config("timed out");
+            }
+            return;
+        }
+        switch (_allystar_config_phase) {
+        case AllystarConfigPhase::WAIT_POLL_MSG:
+            _allystar_config_phase = AllystarConfigPhase::POLL_MSG;
+            break;
+        case AllystarConfigPhase::WAIT_ACK_MSG:
+            _allystar_config_phase = AllystarConfigPhase::SET_MSG;
+            break;
+        case AllystarConfigPhase::WAIT_ACK_SAVE:
+            _allystar_config_phase = AllystarConfigPhase::SAVE_CFG;
+            break;
+        case AllystarConfigPhase::WAIT_VERIFY_MSG:
+            _allystar_config_phase = AllystarConfigPhase::VERIFY_MSG;
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (now_ms - _allystar_last_action_ms < ALLYSTAR_CONFIG_RETRY_MS) {
+        return;
+    }
+
+    switch (_allystar_config_phase) {
+    case AllystarConfigPhase::POLL_MSG:
+        _send_allystar_poll_cfg_msg(allystar_desired_msg_rates[_allystar_config_index].msg_class,
+                                    allystar_desired_msg_rates[_allystar_config_index].msg_id);
+        _allystar_config_phase = AllystarConfigPhase::WAIT_POLL_MSG;
+        _allystar_last_action_ms = now_ms;
+        break;
+
+    case AllystarConfigPhase::SET_MSG:
+        _send_allystar_cfg_msg(allystar_desired_msg_rates[_allystar_config_index].msg_class,
+                               allystar_desired_msg_rates[_allystar_config_index].msg_id,
+                               allystar_desired_msg_rates[_allystar_config_index].rate);
+        _allystar_config_phase = AllystarConfigPhase::WAIT_ACK_MSG;
+        _allystar_last_action_ms = now_ms;
+        break;
+
+    case AllystarConfigPhase::VERIFY_MSG:
+        _send_allystar_poll_cfg_msg(allystar_desired_msg_rates[_allystar_config_index].msg_class,
+                                    allystar_desired_msg_rates[_allystar_config_index].msg_id);
+        _allystar_config_phase = AllystarConfigPhase::WAIT_VERIFY_MSG;
+        _allystar_last_action_ms = now_ms;
+        break;
+
+    case AllystarConfigPhase::SAVE_CFG:
+        if (hal.util->get_soft_armed()) {
+            return;
+        }
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "GPS %u: Allystar saving to NVM",
+                      state.instance + 1);
+        _send_allystar_cfg_cfg(0U, _allystar_save_mask == 0 ? ALLYSTAR_SAVE_MASK_MSG_RATES : _allystar_save_mask);
+        _allystar_config_phase = AllystarConfigPhase::WAIT_ACK_SAVE;
+        _allystar_last_action_ms = now_ms;
+        break;
+
+    default:
+        break;
+    }
+}
+
 bool AP_GPS_NMEA::_allystar_binary_packet_complete()
 {
+    if (_allystar_msg_class == 0x05 &&
+        (_allystar_msg_id == 0x00 || _allystar_msg_id == 0x01) &&
+        _allystar_payload_length == 2) {
+        const uint8_t group = _allystar_buffer[0];
+        const uint8_t sub = _allystar_buffer[1];
+        const bool ack = _allystar_msg_id == 0x01;
+
+        switch (_allystar_config_phase) {
+        case AllystarConfigPhase::WAIT_ACK_MSG:
+            if (group == 0x06 && sub == 0x01) {
+                if (!ack) {
+                    _allystar_fail_config("CFG-MSG rejected");
+                } else {
+                    _allystar_config_retries = 0;
+                    _allystar_config_phase = AllystarConfigPhase::VERIFY_MSG;
+                }
+            }
+            return false;
+
+        case AllystarConfigPhase::WAIT_ACK_SAVE:
+            if (group == 0x06 && sub == 0x09) {
+                if (!ack) {
+                    _allystar_fail_config("CFG-CFG rejected");
+                } else {
+                    _allystar_mark_configured(_allystar_config_dirty);
+                }
+            }
+            return false;
+
+        default:
+            return false;
+        }
+    }
+
+    if (_allystar_msg_class == 0x06 && _allystar_msg_id == 0x01 && _allystar_payload_length >= 3) {
+        for (uint8_t i = 0; i < ALLYSTAR_NUM_CONFIG_MSGS; i++) {
+            if (_allystar_buffer[0] == allystar_desired_msg_rates[i].msg_class &&
+                _allystar_buffer[1] == allystar_desired_msg_rates[i].msg_id) {
+                _allystar_msg_rates[i].msg_class = _allystar_buffer[0];
+                _allystar_msg_rates[i].msg_id = _allystar_buffer[1];
+                _allystar_msg_rates[i].rate = _allystar_buffer[2];
+                _allystar_msg_rates[i].valid = true;
+
+                if (_allystar_config_phase == AllystarConfigPhase::WAIT_POLL_MSG &&
+                    _allystar_config_index == i) {
+                    _allystar_config_retries = 0;
+                    if (i + 1 < ALLYSTAR_NUM_CONFIG_MSGS) {
+                        _allystar_config_index++;
+                        _allystar_config_phase = AllystarConfigPhase::POLL_MSG;
+                    } else if (_allystar_current_config_matches_desired()) {
+                        _allystar_mark_configured(false);
+                    } else {
+                        _allystar_config_index = _allystar_next_dirty_msg(0);
+                        _allystar_config_phase = AllystarConfigPhase::SET_MSG;
+                    }
+                } else if (_allystar_config_phase == AllystarConfigPhase::WAIT_VERIFY_MSG &&
+                           _allystar_config_index == i) {
+                    if (!_allystar_msg_matches_desired(i)) {
+                        _allystar_fail_config("CFG-MSG verify failed");
+                    } else {
+                        _allystar_config_retries = 0;
+                        _allystar_config_dirty = true;
+                        _allystar_save_mask |= ALLYSTAR_SAVE_MASK_MSG_RATES;
+                        const uint8_t next = _allystar_next_dirty_msg(i + 1);
+                        if (next < ALLYSTAR_NUM_CONFIG_MSGS) {
+                            _allystar_config_index = next;
+                            _allystar_config_phase = AllystarConfigPhase::SET_MSG;
+                        } else if (gps._save_config == 1 ||
+                                   (gps._save_config == 2 && _allystar_config_dirty)) {
+                            _allystar_config_phase = AllystarConfigPhase::SAVE_CFG;
+                        } else {
+                            _allystar_mark_configured(true);
+                        }
+                    }
+                }
+                return false;
+            }
+        }
+        return false;
+    }
+
     // Prüfen, ob es sich um die NAV-PVERR-Nachricht handelt (ID 0x01 0x26)
     if (_allystar_msg_class == 0x01 && _allystar_msg_id == 0x26) {
         // NAV-PVERR hat eine Nutzlast von 28 Bytes

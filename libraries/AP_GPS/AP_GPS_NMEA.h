@@ -69,6 +69,10 @@ public:
     // driver specific health, returns true if the driver is healthy
     bool is_healthy(void) const override;
 
+    bool is_configured(void) const override;
+
+    void broadcast_configuration_failure_reason(void) const override;
+
     // get lag in seconds
     bool get_lag(float &lag_sec) const override;
 
@@ -169,7 +173,55 @@ private:
     static const uint16_t ALLYSTAR_BUFFER_SIZE = 128;
     uint8_t _allystar_buffer[ALLYSTAR_BUFFER_SIZE];
 
+public:
+    static constexpr uint8_t ALLYSTAR_NUM_CONFIG_MSGS = 6;
+
+    struct AllystarMsgRate {
+        uint8_t msg_class;
+        uint8_t msg_id;
+        uint8_t rate;
+        bool valid;
+    };
+
+    struct AllystarPwrctl2 {
+        uint8_t mode;
+        uint8_t padding;
+        uint16_t ontime_ms;
+        int32_t fixfreq;
+        uint32_t update_period_ms;
+        uint32_t tracking_ms;
+        bool valid;
+    };
+
+    enum class AllystarConfigPhase : uint8_t {
+        IDLE,
+        POLL_MSG,
+        WAIT_POLL_MSG,
+        SET_MSG,
+        WAIT_ACK_MSG,
+        VERIFY_MSG,
+        WAIT_VERIFY_MSG,
+        SAVE_CFG,
+        WAIT_ACK_SAVE,
+        COMPLETE,
+        FAILED
+    };
+
+private:
     bool _allystar_binary_packet_complete();
+    void _send_allystar_cfg_pwrctl2(const AllystarPwrctl2 &cfg);
+    void _send_allystar_poll_cfg_msg(uint8_t msg_class, uint8_t msg_id);
+    void _send_allystar_poll_pwrctl2(void);
+    void _allystar_config_step(uint32_t now_ms);
+    void _allystar_reset_config_state(void);
+    bool _allystar_pwrctl2_matches_desired(void) const;
+    bool _allystar_msg_matches_desired(uint8_t index) const;
+    bool _allystar_current_config_matches_desired(void) const;
+    uint8_t _allystar_next_dirty_msg(uint8_t start_index) const;
+    void _allystar_mark_configured(bool changed);
+    void _allystar_fail_config(const char *reason);
+    void _allystar_fallback_to_passive(void);
+    const char *_allystar_pending_step_name(void) const;
 
 
     uint8_t _parity;                                                    ///< NMEA message checksum accumulator
@@ -268,15 +320,23 @@ private:
     // last time we sent type specific config strings
     uint32_t last_config_ms;
 
-    // NEU: Deklaration für Allystar-Konfigurationsfunktionen hinzugefügt
     void _send_allystar_cfg_msg(uint8_t msg_class, uint8_t msg_id, uint8_t rate);
-    void _send_allystar_cfg_pwrctl2_5hz(void);
     void _send_allystar_cfg_cfg(uint32_t action, uint32_t mask);
 
-    bool _allystar_config_sent_once = false;
-    bool _allystar_cfg_saved = false;
-    int8_t _allystar_last_save_cfg = -1;
-    uint32_t _allystar_last_save_attempt_ms = 0;
+    AllystarMsgRate _allystar_msg_rates[ALLYSTAR_NUM_CONFIG_MSGS] {};
+    AllystarPwrctl2 _allystar_pwrctl2 {};
+    AllystarConfigPhase _allystar_config_phase = AllystarConfigPhase::IDLE;
+    uint8_t _allystar_config_index = 0;
+    uint8_t _allystar_config_retries = 0;
+    uint32_t _allystar_last_action_ms = 0;
+    uint32_t _allystar_save_mask = 0;
+    bool _allystar_config_dirty = false;
+    bool _allystar_status_reported = false;
+    bool _allystar_passive_mode = false;
+    bool _allystar_saw_binary_rx = false;
+    bool _allystar_reported_binary_error = false;
+    uint32_t _allystar_last_byte_ms = 0;
+    char _allystar_failure_reason[48] {};
 
     // send type specific config strings
     void send_config(void);
