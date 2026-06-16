@@ -70,7 +70,7 @@ static constexpr AllystarDesiredMsgRate allystar_desired_msg_rates[] {
     {0xF0, 0x00, 1, "GGA"},
     {0xF0, 0x05, 1, "RMC"},
     {0xF0, 0x02, 1, "GSA"},
-    {0xF0, 0x04, 1, "GSV"},
+    {0xF0, 0x04, 5, "GSV"},
     {0xF0, 0x06, 1, "VTG"},
     {0x01, 0x26, 1, "NAV-PVERR"},
 };
@@ -85,6 +85,17 @@ static constexpr uint8_t ALLYSTAR_CONFIG_MAX_RETRIES = 3;
 static constexpr uint32_t ALLYSTAR_SAVE_MASK_BAUDRATE = 0x00000001U;
 static constexpr uint32_t ALLYSTAR_SAVE_MASK_MSG_RATES = 0x00000002U;
 static constexpr uint32_t ALLYSTAR_SAVE_MASK_NAV_SETTINGS = 0x00000004U;
+
+static constexpr uint32_t ALLYSTAR_NAVSAT_GPS_L1       = 0x00000001U;
+static constexpr uint32_t ALLYSTAR_NAVSAT_GLONASS_G1   = 0x00000002U;
+static constexpr uint32_t ALLYSTAR_NAVSAT_BEIDOU_B1    = 0x00000004U;
+static constexpr uint32_t ALLYSTAR_NAVSAT_GALILEO_E1   = 0x00000010U;
+static constexpr uint32_t ALLYSTAR_NAVSAT_QZSS_L1      = 0x00000020U;
+static constexpr uint32_t ALLYSTAR_NAVSAT_SBAS_L1      = 0x00000040U;
+static constexpr uint32_t ALLYSTAR_NAVSAT_GPS_L5       = 0x00000200U;
+static constexpr uint32_t ALLYSTAR_NAVSAT_BEIDOU_B2A   = 0x00008000U;
+static constexpr uint32_t ALLYSTAR_NAVSAT_GALILEO_E5A  = 0x00100000U;
+static constexpr uint32_t ALLYSTAR_NAVSAT_QZSS_L5      = 0x04000000U;
 
 static_assert(ARRAY_SIZE(allystar_desired_msg_rates) == AP_GPS_NMEA::ALLYSTAR_NUM_CONFIG_MSGS,
               "Allystar desired message configuration is out of sync");
@@ -112,6 +123,50 @@ void AP_GPS_NMEA::_send_allystar_poll_pwrctl2(void)
 {
     uint8_t packet[8] {0xF1, 0xD9, 0x06, 0x44, 0x00, 0x00, 0x00, 0x00};
     allystar_checksum(&packet[2], 4, packet[6], packet[7]);
+    port->write(packet, sizeof(packet));
+}
+
+void AP_GPS_NMEA::_send_allystar_poll_cfg_elev(void)
+{
+    uint8_t packet[8] {0xF1, 0xD9, 0x06, 0x0B, 0x00, 0x00, 0x00, 0x00};
+    allystar_checksum(&packet[2], 4, packet[6], packet[7]);
+    port->write(packet, sizeof(packet));
+}
+
+void AP_GPS_NMEA::_send_allystar_cfg_elev(float track_mask_rad, float navi_mask_rad)
+{
+    uint8_t packet[16] {
+        0xF1, 0xD9,
+        0x06, 0x0B,
+        0x08, 0x00,
+        0, 0, 0, 0,
+        0, 0, 0, 0,
+        0, 0
+    };
+    memcpy(&packet[6], &track_mask_rad, sizeof(float));
+    memcpy(&packet[10], &navi_mask_rad, sizeof(float));
+    allystar_checksum(&packet[2], 12, packet[14], packet[15]);
+    port->write(packet, sizeof(packet));
+}
+
+void AP_GPS_NMEA::_send_allystar_poll_cfg_navsat(void)
+{
+    uint8_t packet[8] {0xF1, 0xD9, 0x06, 0x0C, 0x00, 0x00, 0x00, 0x00};
+    allystar_checksum(&packet[2], 4, packet[6], packet[7]);
+    port->write(packet, sizeof(packet));
+}
+
+void AP_GPS_NMEA::_send_allystar_cfg_navsat(uint32_t enable_mask)
+{
+    uint8_t packet[12] {
+        0xF1, 0xD9,
+        0x06, 0x0C,
+        0x04, 0x00,
+        0, 0, 0, 0,
+        0, 0
+    };
+    memcpy(&packet[6], &enable_mask, sizeof(uint32_t));
+    allystar_checksum(&packet[2], 8, packet[10], packet[11]);
     port->write(packet, sizeof(packet));
 }
 
@@ -1179,7 +1234,10 @@ void AP_GPS_NMEA::_allystar_reset_config_state(void)
 {
     memset(_allystar_msg_rates, 0, sizeof(_allystar_msg_rates));
     memset(&_allystar_pwrctl2, 0, sizeof(_allystar_pwrctl2));
+    memset(&_allystar_elev, 0, sizeof(_allystar_elev));
+    memset(&_allystar_navsat, 0, sizeof(_allystar_navsat));
     _allystar_config_phase = AllystarConfigPhase::POLL_MSG;
+    _allystar_config_target = AllystarConfigTarget::MSG_RATE;
     _allystar_config_index = 0;
     _allystar_config_retries = 0;
     _allystar_last_action_ms = 0;
@@ -1233,9 +1291,202 @@ uint8_t AP_GPS_NMEA::_allystar_next_dirty_msg(uint8_t start_index) const
     return ALLYSTAR_NUM_CONFIG_MSGS;
 }
 
+bool AP_GPS_NMEA::_allystar_have_desired_tracking_min_elev(int16_t &deg) const
+{
+    if (params.min_elevation_tracking != -100) {
+        deg = params.min_elevation_tracking;
+        return true;
+    }
+    if (gps._min_elevation != -100) {
+        deg = gps._min_elevation;
+        return true;
+    }
+    return false;
+}
+
+bool AP_GPS_NMEA::_allystar_have_desired_use_min_elev(int16_t &deg) const
+{
+    if (params.min_elevation_use != -100) {
+        deg = params.min_elevation_use;
+        return true;
+    }
+    if (gps._min_elevation != -100) {
+        deg = gps._min_elevation;
+        return true;
+    }
+    return false;
+}
+
+uint32_t AP_GPS_NMEA::_allystar_desired_navsat_mask(void) const
+{
+    const uint8_t mode = params.gnss_mode;
+    if (mode == 0) {
+        return 0;
+    }
+
+    uint32_t mask = 0;
+    if (mode & (1U << 0)) {
+        mask |= ALLYSTAR_NAVSAT_GPS_L1 | ALLYSTAR_NAVSAT_GPS_L5;
+    }
+    if (mode & (1U << 1)) {
+        mask |= ALLYSTAR_NAVSAT_SBAS_L1;
+    }
+    if (mode & (1U << 2)) {
+        mask |= ALLYSTAR_NAVSAT_GALILEO_E1 | ALLYSTAR_NAVSAT_GALILEO_E5A;
+    }
+    if (mode & (1U << 3)) {
+        mask |= ALLYSTAR_NAVSAT_BEIDOU_B1 | ALLYSTAR_NAVSAT_BEIDOU_B2A;
+    }
+    if (mode & (1U << 5)) {
+        mask |= ALLYSTAR_NAVSAT_QZSS_L1 | ALLYSTAR_NAVSAT_QZSS_L5;
+    }
+    if (mode & (1U << 6)) {
+        mask |= ALLYSTAR_NAVSAT_GLONASS_G1;
+    }
+    return mask;
+}
+
+bool AP_GPS_NMEA::_allystar_elev_matches_desired(void) const
+{
+    int16_t desired_track_deg;
+    int16_t desired_use_deg;
+    if (!_allystar_elev.valid) {
+        return true;
+    }
+    const bool have_track = _allystar_have_desired_tracking_min_elev(desired_track_deg);
+    const bool have_use = _allystar_have_desired_use_min_elev(desired_use_deg);
+    if (!have_track && !have_use) {
+        return true;
+    }
+
+    const float desired_track_rad = radians((float)(have_track ? desired_track_deg : desired_use_deg));
+    const float desired_use_rad = radians((float)(have_use ? desired_use_deg : desired_track_deg));
+    return fabsf(_allystar_elev.track_mask_rad - desired_track_rad) < 1.0e-4f &&
+           fabsf(_allystar_elev.navi_mask_rad - desired_use_rad) < 1.0e-4f;
+}
+
+bool AP_GPS_NMEA::_allystar_navsat_matches_desired(void) const
+{
+    if (!_allystar_navsat.valid) {
+        return false;
+    }
+    const uint32_t desired_mask = _allystar_desired_navsat_mask();
+    return desired_mask == 0 || _allystar_navsat.enable_mask == desired_mask;
+}
+
+uint8_t AP_GPS_NMEA::_allystar_cfg_subid_for_target(void) const
+{
+    switch (_allystar_config_target) {
+    case AllystarConfigTarget::MSG_RATE:
+        return 0x01;
+    case AllystarConfigTarget::ELEV:
+        return 0x0B;
+    case AllystarConfigTarget::NAVSAT:
+        return 0x0C;
+    }
+    return 0x01;
+}
+
+void AP_GPS_NMEA::_allystar_advance_after_msg_poll(void)
+{
+    if (_allystar_config_index + 1 < ALLYSTAR_NUM_CONFIG_MSGS) {
+        _allystar_config_index++;
+        _allystar_config_phase = AllystarConfigPhase::POLL_MSG;
+        return;
+    }
+    _allystar_config_target = AllystarConfigTarget::ELEV;
+    _allystar_config_phase = AllystarConfigPhase::POLL_MSG;
+}
+
+void AP_GPS_NMEA::_allystar_advance_after_msg_verify(void)
+{
+    const uint8_t next = _allystar_next_dirty_msg(_allystar_config_index + 1);
+    if (next < ALLYSTAR_NUM_CONFIG_MSGS) {
+        _allystar_config_index = next;
+        _allystar_config_phase = AllystarConfigPhase::SET_MSG;
+        return;
+    }
+    _allystar_config_target = AllystarConfigTarget::ELEV;
+    _allystar_config_phase = AllystarConfigPhase::POLL_MSG;
+}
+
+bool AP_GPS_NMEA::_allystar_params_changed(void) const
+{
+    if (!_allystar_have_shadow_params) {
+        return false;
+    }
+    int16_t desired_tracking_min_elev = -100;
+    int16_t desired_use_min_elev = -100;
+    const bool have_tracking = _allystar_have_desired_tracking_min_elev(desired_tracking_min_elev);
+    const bool have_use = _allystar_have_desired_use_min_elev(desired_use_min_elev);
+    const int16_t effective_tracking = have_tracking ? desired_tracking_min_elev : -100;
+    const int16_t effective_use = have_use ? desired_use_min_elev : -100;
+    return params.gnss_mode != _allystar_last_configured_gnss_mode ||
+           effective_tracking != _allystar_last_configured_tracking_min_elevation ||
+           effective_use != _allystar_last_configured_use_min_elevation;
+}
+
+void AP_GPS_NMEA::_allystar_update_shadow_params(void)
+{
+    _allystar_last_configured_gnss_mode = params.gnss_mode;
+    if (!_allystar_have_desired_tracking_min_elev(_allystar_last_configured_tracking_min_elevation)) {
+        _allystar_last_configured_tracking_min_elevation = -100;
+    }
+    if (!_allystar_have_desired_use_min_elev(_allystar_last_configured_use_min_elevation)) {
+        _allystar_last_configured_use_min_elevation = -100;
+    }
+    _allystar_have_shadow_params = true;
+}
+
+void AP_GPS_NMEA::_allystar_sync_min_elev_params_from_device(void)
+{
+    if (!_allystar_elev.valid) {
+        return;
+    }
+    const int16_t track_deg = constrain_int16((int16_t)lrintf(degrees(_allystar_elev.track_mask_rad)), -100, 90);
+    const int16_t use_deg = constrain_int16((int16_t)lrintf(degrees(_allystar_elev.navi_mask_rad)), -100, 90);
+    if (params.min_elevation_tracking == -100 && gps._min_elevation == -100) {
+        params.min_elevation_tracking.set_and_save_ifchanged(track_deg);
+    }
+    if (params.min_elevation_use == -100 && gps._min_elevation == -100) {
+        params.min_elevation_use.set_and_save_ifchanged(use_deg);
+    }
+}
+
+void AP_GPS_NMEA::_allystar_sync_gnss_mode_param_from_device(void)
+{
+    if (!_allystar_navsat.valid || params.gnss_mode != 0) {
+        return;
+    }
+
+    uint8_t gnss_mode = 0;
+    if (_allystar_navsat.enable_mask & (ALLYSTAR_NAVSAT_GPS_L1 | ALLYSTAR_NAVSAT_GPS_L5)) {
+        gnss_mode |= 1U << 0;
+    }
+    if (_allystar_navsat.enable_mask & ALLYSTAR_NAVSAT_SBAS_L1) {
+        gnss_mode |= 1U << 1;
+    }
+    if (_allystar_navsat.enable_mask & (ALLYSTAR_NAVSAT_GALILEO_E1 | ALLYSTAR_NAVSAT_GALILEO_E5A)) {
+        gnss_mode |= 1U << 2;
+    }
+    if (_allystar_navsat.enable_mask & (ALLYSTAR_NAVSAT_BEIDOU_B1 | ALLYSTAR_NAVSAT_BEIDOU_B2A)) {
+        gnss_mode |= 1U << 3;
+    }
+    if (_allystar_navsat.enable_mask & (ALLYSTAR_NAVSAT_QZSS_L1 | ALLYSTAR_NAVSAT_QZSS_L5)) {
+        gnss_mode |= 1U << 5;
+    }
+    if (_allystar_navsat.enable_mask & ALLYSTAR_NAVSAT_GLONASS_G1) {
+        gnss_mode |= 1U << 6;
+    }
+    if (gnss_mode != 0) {
+        params.gnss_mode.set_and_save_ifchanged(gnss_mode);
+    }
+}
+
 void AP_GPS_NMEA::_allystar_mark_configured(bool changed)
 {
     _allystar_config_phase = AllystarConfigPhase::COMPLETE;
+    _allystar_update_shadow_params();
     if (!changed) {
         GCS_SEND_TEXT(MAV_SEVERITY_INFO, "GPS %u: Allystar config already OK",
                       state.instance + 1);
@@ -1281,7 +1532,15 @@ const char *AP_GPS_NMEA::_allystar_pending_step_name(void) const
     case AllystarConfigPhase::WAIT_ACK_MSG:
     case AllystarConfigPhase::VERIFY_MSG:
     case AllystarConfigPhase::WAIT_VERIFY_MSG:
-        return allystar_desired_msg_rates[_allystar_config_index].name;
+        switch (_allystar_config_target) {
+        case AllystarConfigTarget::MSG_RATE:
+            return allystar_desired_msg_rates[_allystar_config_index].name;
+        case AllystarConfigTarget::ELEV:
+            return "min elevation";
+        case AllystarConfigTarget::NAVSAT:
+            return "GNSS mode";
+        }
+        return "config";
     case AllystarConfigPhase::SAVE_CFG:
     case AllystarConfigPhase::WAIT_ACK_SAVE:
         return "saving config";
@@ -1300,6 +1559,10 @@ void AP_GPS_NMEA::_allystar_config_step(uint32_t now_ms)
     if (gps._auto_config == AP_GPS::GPS_AUTO_CONFIG_DISABLE) {
         _allystar_config_phase = AllystarConfigPhase::COMPLETE;
         return;
+    }
+    if (_allystar_config_phase == AllystarConfigPhase::COMPLETE &&
+        _allystar_params_changed()) {
+        _allystar_reset_config_state();
     }
     if (_allystar_config_phase == AllystarConfigPhase::IDLE) {
         _allystar_reset_config_state();
@@ -1349,23 +1612,67 @@ void AP_GPS_NMEA::_allystar_config_step(uint32_t now_ms)
 
     switch (_allystar_config_phase) {
     case AllystarConfigPhase::POLL_MSG:
-        _send_allystar_poll_cfg_msg(allystar_desired_msg_rates[_allystar_config_index].msg_class,
-                                    allystar_desired_msg_rates[_allystar_config_index].msg_id);
+        switch (_allystar_config_target) {
+        case AllystarConfigTarget::MSG_RATE:
+            _send_allystar_poll_cfg_msg(allystar_desired_msg_rates[_allystar_config_index].msg_class,
+                                        allystar_desired_msg_rates[_allystar_config_index].msg_id);
+            break;
+        case AllystarConfigTarget::ELEV:
+            _send_allystar_poll_cfg_elev();
+            break;
+        case AllystarConfigTarget::NAVSAT:
+            _send_allystar_poll_cfg_navsat();
+            break;
+        }
         _allystar_config_phase = AllystarConfigPhase::WAIT_POLL_MSG;
         _allystar_last_action_ms = now_ms;
         break;
 
     case AllystarConfigPhase::SET_MSG:
-        _send_allystar_cfg_msg(allystar_desired_msg_rates[_allystar_config_index].msg_class,
-                               allystar_desired_msg_rates[_allystar_config_index].msg_id,
-                               allystar_desired_msg_rates[_allystar_config_index].rate);
+        switch (_allystar_config_target) {
+        case AllystarConfigTarget::MSG_RATE:
+            _send_allystar_cfg_msg(allystar_desired_msg_rates[_allystar_config_index].msg_class,
+                                   allystar_desired_msg_rates[_allystar_config_index].msg_id,
+                                   allystar_desired_msg_rates[_allystar_config_index].rate);
+            break;
+        case AllystarConfigTarget::ELEV: {
+            int16_t desired_track_deg;
+            int16_t desired_use_deg;
+            const bool have_track = _allystar_have_desired_tracking_min_elev(desired_track_deg);
+            const bool have_use = _allystar_have_desired_use_min_elev(desired_use_deg);
+            if (have_track || have_use) {
+                if (!have_track) {
+                    desired_track_deg = desired_use_deg;
+                }
+                if (!have_use) {
+                    desired_use_deg = desired_track_deg;
+                }
+                _send_allystar_cfg_elev(radians((float)desired_track_deg),
+                                        radians((float)desired_use_deg));
+            }
+            break;
+        }
+        case AllystarConfigTarget::NAVSAT:
+            _send_allystar_cfg_navsat(_allystar_desired_navsat_mask());
+            break;
+        }
         _allystar_config_phase = AllystarConfigPhase::WAIT_ACK_MSG;
         _allystar_last_action_ms = now_ms;
         break;
 
     case AllystarConfigPhase::VERIFY_MSG:
-        _send_allystar_poll_cfg_msg(allystar_desired_msg_rates[_allystar_config_index].msg_class,
-                                    allystar_desired_msg_rates[_allystar_config_index].msg_id);
+        switch (_allystar_config_target) {
+        case AllystarConfigTarget::MSG_RATE:
+            _send_allystar_poll_cfg_msg(allystar_desired_msg_rates[_allystar_config_index].msg_class,
+                                        allystar_desired_msg_rates[_allystar_config_index].msg_id);
+            break;
+        case AllystarConfigTarget::ELEV:
+            _send_allystar_poll_cfg_elev();
+            break;
+        case AllystarConfigTarget::NAVSAT:
+            _send_allystar_poll_cfg_navsat();
+            break;
+        }
         _allystar_config_phase = AllystarConfigPhase::WAIT_VERIFY_MSG;
         _allystar_last_action_ms = now_ms;
         break;
@@ -1394,12 +1701,23 @@ bool AP_GPS_NMEA::_allystar_binary_packet_complete()
         const uint8_t group = _allystar_buffer[0];
         const uint8_t sub = _allystar_buffer[1];
         const bool ack = _allystar_msg_id == 0x01;
+        const uint8_t expected_sub = _allystar_cfg_subid_for_target();
 
         switch (_allystar_config_phase) {
         case AllystarConfigPhase::WAIT_ACK_MSG:
-            if (group == 0x06 && sub == 0x01) {
+            if (group == 0x06 && sub == expected_sub) {
                 if (!ack) {
-                    _allystar_fail_config("CFG-MSG rejected");
+                    switch (_allystar_config_target) {
+                    case AllystarConfigTarget::MSG_RATE:
+                        _allystar_fail_config("CFG-MSG rejected");
+                        break;
+                    case AllystarConfigTarget::ELEV:
+                        _allystar_fail_config("CFG-ELEV rejected");
+                        break;
+                    case AllystarConfigTarget::NAVSAT:
+                        _allystar_fail_config("CFG-NAVSAT rejected");
+                        break;
+                    }
                 } else {
                     _allystar_config_retries = 0;
                     _allystar_config_phase = AllystarConfigPhase::VERIFY_MSG;
@@ -1431,19 +1749,21 @@ bool AP_GPS_NMEA::_allystar_binary_packet_complete()
                 _allystar_msg_rates[i].rate = _allystar_buffer[2];
                 _allystar_msg_rates[i].valid = true;
 
-                if (_allystar_config_phase == AllystarConfigPhase::WAIT_POLL_MSG &&
+                if (_allystar_config_target == AllystarConfigTarget::MSG_RATE &&
+                    _allystar_config_phase == AllystarConfigPhase::WAIT_POLL_MSG &&
                     _allystar_config_index == i) {
                     _allystar_config_retries = 0;
-                    if (i + 1 < ALLYSTAR_NUM_CONFIG_MSGS) {
-                        _allystar_config_index++;
-                        _allystar_config_phase = AllystarConfigPhase::POLL_MSG;
+                    if (_allystar_config_index + 1 < ALLYSTAR_NUM_CONFIG_MSGS) {
+                        _allystar_advance_after_msg_poll();
                     } else if (_allystar_current_config_matches_desired()) {
-                        _allystar_mark_configured(false);
+                        _allystar_config_target = AllystarConfigTarget::ELEV;
+                        _allystar_config_phase = AllystarConfigPhase::POLL_MSG;
                     } else {
                         _allystar_config_index = _allystar_next_dirty_msg(0);
                         _allystar_config_phase = AllystarConfigPhase::SET_MSG;
                     }
-                } else if (_allystar_config_phase == AllystarConfigPhase::WAIT_VERIFY_MSG &&
+                } else if (_allystar_config_target == AllystarConfigTarget::MSG_RATE &&
+                           _allystar_config_phase == AllystarConfigPhase::WAIT_VERIFY_MSG &&
                            _allystar_config_index == i) {
                     if (!_allystar_msg_matches_desired(i)) {
                         _allystar_fail_config("CFG-MSG verify failed");
@@ -1451,19 +1771,87 @@ bool AP_GPS_NMEA::_allystar_binary_packet_complete()
                         _allystar_config_retries = 0;
                         _allystar_config_dirty = true;
                         _allystar_save_mask |= ALLYSTAR_SAVE_MASK_MSG_RATES;
-                        const uint8_t next = _allystar_next_dirty_msg(i + 1);
-                        if (next < ALLYSTAR_NUM_CONFIG_MSGS) {
-                            _allystar_config_index = next;
-                            _allystar_config_phase = AllystarConfigPhase::SET_MSG;
-                        } else if (gps._save_config == 1 ||
-                                   (gps._save_config == 2 && _allystar_config_dirty)) {
-                            _allystar_config_phase = AllystarConfigPhase::SAVE_CFG;
-                        } else {
-                            _allystar_mark_configured(true);
-                        }
+                        _allystar_advance_after_msg_verify();
                     }
                 }
                 return false;
+            }
+        }
+        return false;
+    }
+
+    if (_allystar_msg_class == 0x06 && _allystar_msg_id == 0x0B &&
+        (_allystar_payload_length == 4 || _allystar_payload_length == 8)) {
+        if (_allystar_payload_length == 4) {
+            memcpy(&_allystar_elev.navi_mask_rad, &_allystar_buffer[0], sizeof(float));
+            _allystar_elev.track_mask_rad = _allystar_elev.navi_mask_rad;
+        } else {
+            memcpy(&_allystar_elev.track_mask_rad, &_allystar_buffer[0], sizeof(float));
+            memcpy(&_allystar_elev.navi_mask_rad, &_allystar_buffer[4], sizeof(float));
+        }
+        _allystar_elev.valid = true;
+        _allystar_sync_min_elev_params_from_device();
+
+        if (_allystar_config_target != AllystarConfigTarget::ELEV) {
+            return false;
+        }
+        if (_allystar_config_phase == AllystarConfigPhase::WAIT_POLL_MSG) {
+            _allystar_config_retries = 0;
+            if (_allystar_elev_matches_desired()) {
+                _allystar_config_target = AllystarConfigTarget::NAVSAT;
+                _allystar_config_phase = AllystarConfigPhase::POLL_MSG;
+            } else {
+                _allystar_config_phase = AllystarConfigPhase::SET_MSG;
+            }
+        } else if (_allystar_config_phase == AllystarConfigPhase::WAIT_VERIFY_MSG) {
+            if (!_allystar_elev_matches_desired()) {
+                _allystar_fail_config("CFG-ELEV verify failed");
+            } else {
+                _allystar_config_retries = 0;
+                _allystar_config_dirty = true;
+                _allystar_save_mask |= ALLYSTAR_SAVE_MASK_NAV_SETTINGS;
+                _allystar_config_target = AllystarConfigTarget::NAVSAT;
+                _allystar_config_phase = AllystarConfigPhase::POLL_MSG;
+            }
+        }
+        return false;
+    }
+
+    if (_allystar_msg_class == 0x06 && _allystar_msg_id == 0x0C && _allystar_payload_length == 4) {
+        memcpy(&_allystar_navsat.enable_mask, &_allystar_buffer[0], sizeof(uint32_t));
+        _allystar_navsat.valid = true;
+        _allystar_sync_gnss_mode_param_from_device();
+
+        if (_allystar_config_target != AllystarConfigTarget::NAVSAT) {
+            return false;
+        }
+        if (_allystar_config_phase == AllystarConfigPhase::WAIT_POLL_MSG) {
+            _allystar_config_retries = 0;
+            if (_allystar_navsat_matches_desired()) {
+                if (_allystar_config_dirty &&
+                    (gps._save_config == 1 || (gps._save_config == 2 && _allystar_config_dirty))) {
+                    _allystar_config_phase = AllystarConfigPhase::SAVE_CFG;
+                } else if (_allystar_config_dirty) {
+                    _allystar_mark_configured(true);
+                } else {
+                    _allystar_mark_configured(false);
+                }
+            } else {
+                _allystar_config_phase = AllystarConfigPhase::SET_MSG;
+            }
+        } else if (_allystar_config_phase == AllystarConfigPhase::WAIT_VERIFY_MSG) {
+            if (!_allystar_navsat_matches_desired()) {
+                _allystar_fail_config("CFG-NAVSAT verify failed");
+            } else {
+                _allystar_config_retries = 0;
+                _allystar_config_dirty = true;
+                _allystar_save_mask |= ALLYSTAR_SAVE_MASK_NAV_SETTINGS;
+                if (gps._save_config == 1 ||
+                    (gps._save_config == 2 && _allystar_config_dirty)) {
+                    _allystar_config_phase = AllystarConfigPhase::SAVE_CFG;
+                } else {
+                    _allystar_mark_configured(true);
+                }
             }
         }
         return false;

@@ -37,6 +37,22 @@ const AP_Param::GroupInfo AP_GPS::Params::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("GNSS_MODE", 2, AP_GPS::Params, gnss_mode, 0),
 
+    // @Param: ELEV_TRK
+    // @DisplayName: Tracking minimum elevation
+    // @Description: Minimum satellite elevation above horizon for this GPS receiver to track satellites. Set to -100 to leave the receiver setting unchanged unless the backend populates it from the receiver.
+    // @Range: -100 90
+    // @Units: deg
+    // @User: Advanced
+    AP_GROUPINFO("ELEV_TRK", 10, AP_GPS::Params, min_elevation_tracking, -100),
+
+    // @Param: ELEV_USE
+    // @DisplayName: Navigation minimum elevation
+    // @Description: Minimum satellite elevation above horizon for this GPS receiver to use satellites in navigation. Set to -100 to leave the receiver setting unchanged unless the backend populates it from the receiver.
+    // @Range: -100 90
+    // @Units: deg
+    // @User: Advanced
+    AP_GROUPINFO("ELEV_USE", 11, AP_GPS::Params, min_elevation_use, -100),
+
     // @Param: RATE_MS
     // @DisplayName: GPS update rate in milliseconds
     // @Description: Controls how often the GPS should provide a position update. Lowering below 5Hz(default) is not allowed. Raising the rate above 5Hz usually provides little benefit and for some GPS (eg Ublox M9N) can severely impact performance.

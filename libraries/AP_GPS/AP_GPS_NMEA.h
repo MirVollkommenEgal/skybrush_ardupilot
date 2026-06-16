@@ -193,6 +193,23 @@ public:
         bool valid;
     };
 
+    struct AllystarElev {
+        float track_mask_rad;
+        float navi_mask_rad;
+        bool valid;
+    };
+
+    struct AllystarNavSat {
+        uint32_t enable_mask;
+        bool valid;
+    };
+
+    enum class AllystarConfigTarget : uint8_t {
+        MSG_RATE,
+        ELEV,
+        NAVSAT,
+    };
+
     enum class AllystarConfigPhase : uint8_t {
         IDLE,
         POLL_MSG,
@@ -212,12 +229,28 @@ private:
     void _send_allystar_cfg_pwrctl2(const AllystarPwrctl2 &cfg);
     void _send_allystar_poll_cfg_msg(uint8_t msg_class, uint8_t msg_id);
     void _send_allystar_poll_pwrctl2(void);
+    void _send_allystar_poll_cfg_elev(void);
+    void _send_allystar_cfg_elev(float track_mask_rad, float navi_mask_rad);
+    void _send_allystar_poll_cfg_navsat(void);
+    void _send_allystar_cfg_navsat(uint32_t enable_mask);
     void _allystar_config_step(uint32_t now_ms);
     void _allystar_reset_config_state(void);
     bool _allystar_pwrctl2_matches_desired(void) const;
     bool _allystar_msg_matches_desired(uint8_t index) const;
     bool _allystar_current_config_matches_desired(void) const;
     uint8_t _allystar_next_dirty_msg(uint8_t start_index) const;
+    bool _allystar_elev_matches_desired(void) const;
+    bool _allystar_navsat_matches_desired(void) const;
+    bool _allystar_have_desired_tracking_min_elev(int16_t &deg) const;
+    bool _allystar_have_desired_use_min_elev(int16_t &deg) const;
+    uint32_t _allystar_desired_navsat_mask(void) const;
+    uint8_t _allystar_cfg_subid_for_target(void) const;
+    void _allystar_advance_after_msg_poll(void);
+    void _allystar_advance_after_msg_verify(void);
+    bool _allystar_params_changed(void) const;
+    void _allystar_update_shadow_params(void);
+    void _allystar_sync_min_elev_params_from_device(void);
+    void _allystar_sync_gnss_mode_param_from_device(void);
     void _allystar_mark_configured(bool changed);
     void _allystar_fail_config(const char *reason);
     void _allystar_fallback_to_passive(void);
@@ -325,7 +358,10 @@ private:
 
     AllystarMsgRate _allystar_msg_rates[ALLYSTAR_NUM_CONFIG_MSGS] {};
     AllystarPwrctl2 _allystar_pwrctl2 {};
+    AllystarElev _allystar_elev {};
+    AllystarNavSat _allystar_navsat {};
     AllystarConfigPhase _allystar_config_phase = AllystarConfigPhase::IDLE;
+    AllystarConfigTarget _allystar_config_target = AllystarConfigTarget::MSG_RATE;
     uint8_t _allystar_config_index = 0;
     uint8_t _allystar_config_retries = 0;
     uint32_t _allystar_last_action_ms = 0;
@@ -336,6 +372,10 @@ private:
     bool _allystar_saw_binary_rx = false;
     bool _allystar_reported_binary_error = false;
     uint32_t _allystar_last_byte_ms = 0;
+    int8_t _allystar_last_configured_gnss_mode = 0;
+    int16_t _allystar_last_configured_tracking_min_elevation = -100;
+    int16_t _allystar_last_configured_use_min_elevation = -100;
+    bool _allystar_have_shadow_params = false;
     char _allystar_failure_reason[48] {};
 
     // send type specific config strings
