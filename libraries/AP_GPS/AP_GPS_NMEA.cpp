@@ -1293,13 +1293,12 @@ void AP_GPS_NMEA::_allystar_reset_config_state(void)
 
 AP_GPS_NMEA::AllystarPwrctl2 AP_GPS_NMEA::_allystar_desired_pwrctl2() const
 {
-    const uint16_t constrained_rate_ms = MAX<uint16_t>(1, params.rate_ms);
     return AllystarPwrctl2 {
         0,
         0,
-        1,
-        int32_t(1000U / constrained_rate_ms),
-        constrained_rate_ms,
+        0,
+        0,
+        0,
         0,
         true
     };
@@ -1308,8 +1307,13 @@ AP_GPS_NMEA::AllystarPwrctl2 AP_GPS_NMEA::_allystar_desired_pwrctl2() const
 bool AP_GPS_NMEA::_allystar_pwrctl2_matches_desired(void) const
 {
     const auto desired = _allystar_desired_pwrctl2();
-    return _allystar_pwrctl2.valid &&
-           _allystar_pwrctl2.mode == desired.mode &&
+    if (!_allystar_pwrctl2.valid) {
+        return false;
+    }
+    if (desired.mode == 0) {
+        return _allystar_pwrctl2.mode == 0;
+    }
+    return _allystar_pwrctl2.mode == desired.mode &&
            _allystar_pwrctl2.padding == desired.padding &&
            _allystar_pwrctl2.ontime_ms == desired.ontime_ms &&
            _allystar_pwrctl2.fixfreq == desired.fixfreq &&
