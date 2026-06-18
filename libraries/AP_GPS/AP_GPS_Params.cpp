@@ -53,6 +53,21 @@ const AP_Param::GroupInfo AP_GPS::Params::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("ELEV_USE", 11, AP_GPS::Params, min_elevation_use, -100),
 
+    // @Param: SPD_HOLD
+    // @DisplayName: Static hold speed
+    // @Description: Static hold speed threshold for this GPS receiver in cm/s. Set to -1 to leave the receiver setting unchanged unless the backend populates it from the receiver.
+    // @Range: -1 1000
+    // @Units: cm/s
+    // @User: Advanced
+    AP_GROUPINFO("SPD_HOLD", 12, AP_GPS::Params, speed_hold, -1),
+
+    // @Param: CARR_SMO
+    // @DisplayName: Carrier smoothing
+    // @Description: Carrier smoothing mode for this GPS receiver. Set to -2 to leave the receiver setting unchanged unless the backend populates it from the receiver. -1 enables auto smoothing, 0 disables smoothing, 1 and higher enable smoothing with window value x+1.
+    // @Range: -2 50
+    // @User: Advanced
+    AP_GROUPINFO("CARR_SMO", 13, AP_GPS::Params, carrier_smoothing, -2),
+
     // @Param: RATE_MS
     // @DisplayName: GPS update rate in milliseconds
     // @Description: Controls how often the GPS should provide a position update. Lowering below 5Hz(default) is not allowed. Raising the rate above 5Hz usually provides little benefit and for some GPS (eg Ublox M9N) can severely impact performance.

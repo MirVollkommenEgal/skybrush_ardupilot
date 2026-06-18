@@ -204,10 +204,22 @@ public:
         bool valid;
     };
 
+    struct AllystarSpeedHold {
+        uint16_t speed_cms;
+        bool valid;
+    };
+
+    struct AllystarCarrSmooth {
+        int8_t windows;
+        bool valid;
+    };
+
     enum class AllystarConfigTarget : uint8_t {
         MSG_RATE,
         ELEV,
         NAVSAT,
+        SPDHOLD,
+        CARRSMOOTH,
     };
 
     enum class AllystarConfigPhase : uint8_t {
@@ -233,6 +245,10 @@ private:
     void _send_allystar_cfg_elev(float track_mask_rad, float navi_mask_rad);
     void _send_allystar_poll_cfg_navsat(void);
     void _send_allystar_cfg_navsat(uint32_t enable_mask);
+    void _send_allystar_poll_cfg_spdhold(void);
+    void _send_allystar_cfg_spdhold(uint16_t speed_cms);
+    void _send_allystar_poll_cfg_carrsmooth(void);
+    void _send_allystar_cfg_carrsmooth(int8_t windows);
     void _allystar_config_step(uint32_t now_ms);
     void _allystar_reset_config_state(void);
     bool _allystar_pwrctl2_matches_desired(void) const;
@@ -241,8 +257,12 @@ private:
     uint8_t _allystar_next_dirty_msg(uint8_t start_index) const;
     bool _allystar_elev_matches_desired(void) const;
     bool _allystar_navsat_matches_desired(void) const;
+    bool _allystar_spdhold_matches_desired(void) const;
+    bool _allystar_carrsmooth_matches_desired(void) const;
     bool _allystar_have_desired_tracking_min_elev(int16_t &deg) const;
     bool _allystar_have_desired_use_min_elev(int16_t &deg) const;
+    bool _allystar_have_desired_speed_hold(uint16_t &speed_cms) const;
+    bool _allystar_have_desired_carrsmooth(int8_t &windows) const;
     uint32_t _allystar_desired_navsat_mask(void) const;
     uint8_t _allystar_cfg_subid_for_target(void) const;
     void _allystar_advance_after_msg_poll(void);
@@ -251,6 +271,8 @@ private:
     void _allystar_update_shadow_params(void);
     void _allystar_sync_min_elev_params_from_device(void);
     void _allystar_sync_gnss_mode_param_from_device(void);
+    void _allystar_sync_speed_hold_param_from_device(void);
+    void _allystar_sync_carrsmooth_param_from_device(void);
     void _allystar_mark_configured(bool changed);
     void _allystar_fail_config(const char *reason);
     void _allystar_fallback_to_passive(void);
@@ -360,6 +382,8 @@ private:
     AllystarPwrctl2 _allystar_pwrctl2 {};
     AllystarElev _allystar_elev {};
     AllystarNavSat _allystar_navsat {};
+    AllystarSpeedHold _allystar_spdhold {};
+    AllystarCarrSmooth _allystar_carrsmooth {};
     AllystarConfigPhase _allystar_config_phase = AllystarConfigPhase::IDLE;
     AllystarConfigTarget _allystar_config_target = AllystarConfigTarget::MSG_RATE;
     uint8_t _allystar_config_index = 0;
@@ -375,6 +399,8 @@ private:
     int8_t _allystar_last_configured_gnss_mode = 0;
     int16_t _allystar_last_configured_tracking_min_elevation = -100;
     int16_t _allystar_last_configured_use_min_elevation = -100;
+    int16_t _allystar_last_configured_speed_hold = -1;
+    int8_t _allystar_last_configured_carrsmooth = -2;
     bool _allystar_have_shadow_params = false;
     char _allystar_failure_reason[48] {};
 
