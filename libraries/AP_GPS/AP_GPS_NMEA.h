@@ -215,6 +215,7 @@ public:
     };
 
     enum class AllystarConfigTarget : uint8_t {
+        PWRCTL2,
         MSG_RATE,
         ELEV,
         NAVSAT,
@@ -252,6 +253,7 @@ private:
     void _allystar_config_step(uint32_t now_ms);
     void _allystar_reset_config_state(void);
     bool _allystar_pwrctl2_matches_desired(void) const;
+    AllystarPwrctl2 _allystar_desired_pwrctl2() const;
     bool _allystar_msg_matches_desired(uint8_t index) const;
     bool _allystar_current_config_matches_desired(void) const;
     uint8_t _allystar_next_dirty_msg(uint8_t start_index) const;
@@ -397,6 +399,7 @@ private:
     bool _allystar_reported_binary_error = false;
     uint32_t _allystar_last_byte_ms = 0;
     int8_t _allystar_last_configured_gnss_mode = 0;
+    uint16_t _allystar_last_configured_rate_ms = 200;
     int16_t _allystar_last_configured_tracking_min_elevation = -100;
     int16_t _allystar_last_configured_use_min_elevation = -100;
     int16_t _allystar_last_configured_speed_hold = -1;

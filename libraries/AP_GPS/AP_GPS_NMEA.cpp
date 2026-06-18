@@ -75,10 +75,6 @@ static constexpr AllystarDesiredMsgRate allystar_desired_msg_rates[] {
     {0x01, 0x26, 1, "NAV-PVERR"},
 };
 
-static constexpr AP_GPS_NMEA::AllystarPwrctl2 allystar_desired_pwrctl2 {
-    0, 0, 1, 5, 200, 0, true
-};
-
 static constexpr uint32_t ALLYSTAR_CONFIG_RETRY_MS = 500U;
 static constexpr uint32_t ALLYSTAR_CONFIG_TIMEOUT_MS = 1500U;
 static constexpr uint8_t ALLYSTAR_CONFIG_MAX_RETRIES = 3;
@@ -1278,8 +1274,10 @@ void AP_GPS_NMEA::_allystar_reset_config_state(void)
     memset(&_allystar_pwrctl2, 0, sizeof(_allystar_pwrctl2));
     memset(&_allystar_elev, 0, sizeof(_allystar_elev));
     memset(&_allystar_navsat, 0, sizeof(_allystar_navsat));
+    memset(&_allystar_spdhold, 0, sizeof(_allystar_spdhold));
+    memset(&_allystar_carrsmooth, 0, sizeof(_allystar_carrsmooth));
     _allystar_config_phase = AllystarConfigPhase::POLL_MSG;
-    _allystar_config_target = AllystarConfigTarget::MSG_RATE;
+    _allystar_config_target = AllystarConfigTarget::PWRCTL2;
     _allystar_config_index = 0;
     _allystar_config_retries = 0;
     _allystar_last_action_ms = 0;
@@ -1293,15 +1291,30 @@ void AP_GPS_NMEA::_allystar_reset_config_state(void)
     _allystar_failure_reason[0] = '\0';
 }
 
+AP_GPS_NMEA::AllystarPwrctl2 AP_GPS_NMEA::_allystar_desired_pwrctl2() const
+{
+    const uint16_t constrained_rate_ms = MAX<uint16_t>(1, params.rate_ms);
+    return AllystarPwrctl2 {
+        0,
+        0,
+        1,
+        int32_t(1000U / constrained_rate_ms),
+        constrained_rate_ms,
+        0,
+        true
+    };
+}
+
 bool AP_GPS_NMEA::_allystar_pwrctl2_matches_desired(void) const
 {
+    const auto desired = _allystar_desired_pwrctl2();
     return _allystar_pwrctl2.valid &&
-           _allystar_pwrctl2.mode == allystar_desired_pwrctl2.mode &&
-           _allystar_pwrctl2.padding == allystar_desired_pwrctl2.padding &&
-           _allystar_pwrctl2.ontime_ms == allystar_desired_pwrctl2.ontime_ms &&
-           _allystar_pwrctl2.fixfreq == allystar_desired_pwrctl2.fixfreq &&
-           _allystar_pwrctl2.update_period_ms == allystar_desired_pwrctl2.update_period_ms &&
-           _allystar_pwrctl2.tracking_ms == allystar_desired_pwrctl2.tracking_ms;
+           _allystar_pwrctl2.mode == desired.mode &&
+           _allystar_pwrctl2.padding == desired.padding &&
+           _allystar_pwrctl2.ontime_ms == desired.ontime_ms &&
+           _allystar_pwrctl2.fixfreq == desired.fixfreq &&
+           _allystar_pwrctl2.update_period_ms == desired.update_period_ms &&
+           _allystar_pwrctl2.tracking_ms == desired.tracking_ms;
 }
 
 bool AP_GPS_NMEA::_allystar_msg_matches_desired(uint8_t index) const
@@ -1453,6 +1466,8 @@ bool AP_GPS_NMEA::_allystar_carrsmooth_matches_desired(void) const
 uint8_t AP_GPS_NMEA::_allystar_cfg_subid_for_target(void) const
 {
     switch (_allystar_config_target) {
+    case AllystarConfigTarget::PWRCTL2:
+        return 0x44;
     case AllystarConfigTarget::MSG_RATE:
         return 0x01;
     case AllystarConfigTarget::ELEV:
@@ -1506,6 +1521,7 @@ bool AP_GPS_NMEA::_allystar_params_changed(void) const
     const int16_t effective_tracking = have_tracking ? desired_tracking_min_elev : -100;
     const int16_t effective_use = have_use ? desired_use_min_elev : -100;
     return params.gnss_mode != _allystar_last_configured_gnss_mode ||
+           params.rate_ms != _allystar_last_configured_rate_ms ||
            effective_tracking != _allystar_last_configured_tracking_min_elevation ||
            effective_use != _allystar_last_configured_use_min_elevation ||
            (have_speed_hold ? (int16_t)desired_speed_hold : -1) != _allystar_last_configured_speed_hold ||
@@ -1515,6 +1531,7 @@ bool AP_GPS_NMEA::_allystar_params_changed(void) const
 void AP_GPS_NMEA::_allystar_update_shadow_params(void)
 {
     _allystar_last_configured_gnss_mode = params.gnss_mode;
+    _allystar_last_configured_rate_ms = params.rate_ms;
     if (!_allystar_have_desired_tracking_min_elev(_allystar_last_configured_tracking_min_elevation)) {
         _allystar_last_configured_tracking_min_elevation = -100;
     }
@@ -1644,6 +1661,8 @@ const char *AP_GPS_NMEA::_allystar_pending_step_name(void) const
     case AllystarConfigPhase::VERIFY_MSG:
     case AllystarConfigPhase::WAIT_VERIFY_MSG:
         switch (_allystar_config_target) {
+        case AllystarConfigTarget::PWRCTL2:
+            return "update rate";
         case AllystarConfigTarget::MSG_RATE:
             return allystar_desired_msg_rates[_allystar_config_index].name;
         case AllystarConfigTarget::ELEV:
@@ -1728,6 +1747,9 @@ void AP_GPS_NMEA::_allystar_config_step(uint32_t now_ms)
     switch (_allystar_config_phase) {
     case AllystarConfigPhase::POLL_MSG:
         switch (_allystar_config_target) {
+        case AllystarConfigTarget::PWRCTL2:
+            _send_allystar_poll_pwrctl2();
+            break;
         case AllystarConfigTarget::MSG_RATE:
             _send_allystar_poll_cfg_msg(allystar_desired_msg_rates[_allystar_config_index].msg_class,
                                         allystar_desired_msg_rates[_allystar_config_index].msg_id);
@@ -1751,6 +1773,9 @@ void AP_GPS_NMEA::_allystar_config_step(uint32_t now_ms)
 
     case AllystarConfigPhase::SET_MSG:
         switch (_allystar_config_target) {
+        case AllystarConfigTarget::PWRCTL2:
+            _send_allystar_cfg_pwrctl2(_allystar_desired_pwrctl2());
+            break;
         case AllystarConfigTarget::MSG_RATE:
             _send_allystar_cfg_msg(allystar_desired_msg_rates[_allystar_config_index].msg_class,
                                    allystar_desired_msg_rates[_allystar_config_index].msg_id,
@@ -1797,6 +1822,9 @@ void AP_GPS_NMEA::_allystar_config_step(uint32_t now_ms)
 
     case AllystarConfigPhase::VERIFY_MSG:
         switch (_allystar_config_target) {
+        case AllystarConfigTarget::PWRCTL2:
+            _send_allystar_poll_pwrctl2();
+            break;
         case AllystarConfigTarget::MSG_RATE:
             _send_allystar_poll_cfg_msg(allystar_desired_msg_rates[_allystar_config_index].msg_class,
                                         allystar_desired_msg_rates[_allystar_config_index].msg_id);
@@ -1849,6 +1877,9 @@ bool AP_GPS_NMEA::_allystar_binary_packet_complete()
             if (group == 0x06 && sub == expected_sub) {
                 if (!ack) {
                     switch (_allystar_config_target) {
+                    case AllystarConfigTarget::PWRCTL2:
+                        _allystar_fail_config("CFG-PWRCTL2 rejected");
+                        break;
                     case AllystarConfigTarget::MSG_RATE:
                         _allystar_fail_config("CFG-MSG rejected");
                         break;
@@ -1922,6 +1953,42 @@ bool AP_GPS_NMEA::_allystar_binary_packet_complete()
                     }
                 }
                 return false;
+            }
+        }
+        return false;
+    }
+
+    if (_allystar_msg_class == 0x06 && _allystar_msg_id == 0x44 && _allystar_payload_length == 16) {
+        _allystar_pwrctl2.mode = _allystar_buffer[0];
+        _allystar_pwrctl2.padding = _allystar_buffer[1];
+        _allystar_pwrctl2.ontime_ms = (uint16_t)_allystar_buffer[2] | ((uint16_t)_allystar_buffer[3] << 8);
+        memcpy(&_allystar_pwrctl2.fixfreq, &_allystar_buffer[4], sizeof(int32_t));
+        memcpy(&_allystar_pwrctl2.update_period_ms, &_allystar_buffer[8], sizeof(uint32_t));
+        memcpy(&_allystar_pwrctl2.tracking_ms, &_allystar_buffer[12], sizeof(uint32_t));
+        _allystar_pwrctl2.valid = true;
+
+        if (_allystar_config_target != AllystarConfigTarget::PWRCTL2) {
+            return false;
+        }
+        if (_allystar_config_phase == AllystarConfigPhase::WAIT_POLL_MSG) {
+            _allystar_config_retries = 0;
+            if (_allystar_pwrctl2_matches_desired()) {
+                _allystar_config_target = AllystarConfigTarget::MSG_RATE;
+                _allystar_config_index = 0;
+                _allystar_config_phase = AllystarConfigPhase::POLL_MSG;
+            } else {
+                _allystar_config_phase = AllystarConfigPhase::SET_MSG;
+            }
+        } else if (_allystar_config_phase == AllystarConfigPhase::WAIT_VERIFY_MSG) {
+            if (!_allystar_pwrctl2_matches_desired()) {
+                _allystar_fail_config("CFG-PWRCTL2 verify failed");
+            } else {
+                _allystar_config_retries = 0;
+                _allystar_config_dirty = true;
+                _allystar_save_mask |= ALLYSTAR_SAVE_MASK_NAV_SETTINGS;
+                _allystar_config_target = AllystarConfigTarget::MSG_RATE;
+                _allystar_config_index = 0;
+                _allystar_config_phase = AllystarConfigPhase::POLL_MSG;
             }
         }
         return false;
