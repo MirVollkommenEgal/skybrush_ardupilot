@@ -1597,15 +1597,21 @@ void AP_GPS_NMEA::_allystar_sync_gnss_mode_param_from_device(void)
 
 void AP_GPS_NMEA::_allystar_sync_speed_hold_param_from_device(void)
 {
-    if (!_allystar_spdhold.valid || params.speed_hold != -1) {
+    if (!_allystar_spdhold.valid) {
         return;
     }
-    params.speed_hold.set_and_save_ifchanged(_allystar_spdhold.speed_cms);
+    if (params.speed_hold.configured() && params.speed_hold != -1) {
+        return;
+    }
+    params.speed_hold.set_and_save_ifchanged(MIN<int16_t>(_allystar_spdhold.speed_cms, INT16_MAX));
 }
 
 void AP_GPS_NMEA::_allystar_sync_carrsmooth_param_from_device(void)
 {
-    if (!_allystar_carrsmooth.valid || params.carrier_smoothing != -2) {
+    if (!_allystar_carrsmooth.valid) {
+        return;
+    }
+    if (params.carrier_smoothing.configured() && params.carrier_smoothing != -2) {
         return;
     }
     params.carrier_smoothing.set_and_save_ifchanged(_allystar_carrsmooth.windows);
@@ -1613,6 +1619,10 @@ void AP_GPS_NMEA::_allystar_sync_carrsmooth_param_from_device(void)
 
 void AP_GPS_NMEA::_allystar_mark_configured(bool changed)
 {
+    _allystar_sync_min_elev_params_from_device();
+    _allystar_sync_gnss_mode_param_from_device();
+    _allystar_sync_speed_hold_param_from_device();
+    _allystar_sync_carrsmooth_param_from_device();
     _allystar_config_phase = AllystarConfigPhase::COMPLETE;
     _allystar_update_shadow_params();
     if (!changed) {
